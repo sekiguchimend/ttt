@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -18,8 +17,15 @@ const Login = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const { login, loading } = useAuth();
+  const { login, loading, isAuthenticated } = useAuth();
   const navigate = useNavigate();
+
+  // 認証状態の変更を監視
+  React.useEffect(() => {
+    if (isAuthenticated) {
+      navigate('/');
+    }
+  }, [isAuthenticated, navigate]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,7 +33,6 @@ const Login = () => {
     
     try {
       await login(email, password);
-      navigate('/');
     } catch (err) {
       setError('ログインに失敗しました。メールアドレスとパスワードを確認してください。');
     }
@@ -91,13 +96,13 @@ const Login = () => {
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'ログイン中...' : 'ログイン'}
               </Button>
-              
-              <div className="text-center text-sm text-muted-foreground mt-4">
-                <p>デモアカウント:</p>
-                <p>管理者: admin@example.com / パスワード: 任意</p>
-                <p>従業員: employee@example.com / パスワード: 任意</p>
-              </div>
             </form>
+            
+            <div className="text-center text-sm text-muted-foreground mt-4">
+              <p>デモアカウント:</p>
+              <p>管理者: admin@example.com / パスワード: 任意</p>
+              <p>従業員: employee@example.com / パスワード: 任意</p>
+            </div>
           </CardContent>
         </Card>
       </motion.div>

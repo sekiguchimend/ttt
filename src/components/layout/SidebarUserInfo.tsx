@@ -1,25 +1,37 @@
-
 import React from 'react';
 import { useAuth } from '@/context/AuthContext';
-import { useSidebar } from './SidebarContext';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Button } from '@/components/ui/button';
+import { LogOut } from 'lucide-react';
 
-export const SidebarUserInfo: React.FC = () => {
-  const { user } = useAuth();
-  const { collapsed } = useSidebar();
-  
-  if (collapsed || !user) return null;
-  
+export function SidebarUserInfo() {
+  const { user, signOut } = useAuth();
+
+  if (!user) return null;
+
+  // ユーザー名のイニシャルを取得
+  const getInitials = (name?: string) => {
+    if (!name) return '?';
+    return name
+      .split(' ')
+      .map(n => n.charAt(0))
+      .join('')
+      .toUpperCase();
+  };
+
   return (
-    <div className="p-4 border-b">
-      <div className="flex items-center gap-3">
-        <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center text-sm font-semibold text-primary">
-          {user.name.charAt(0)}
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="font-medium truncate">{user.name}</div>
-          <div className="text-xs text-muted-foreground truncate">{user.department}</div>
-        </div>
+    <div className="flex items-center gap-4 p-4 border-t">
+      <Avatar>
+        <AvatarImage src={user.avatar} alt={user.name || 'User'} />
+        <AvatarFallback>{getInitials(user.name)}</AvatarFallback>
+      </Avatar>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium truncate">{user.name || 'ユーザー'}</p>
+        <p className="text-xs text-muted-foreground truncate">{user.email}</p>
       </div>
+      <Button variant="ghost" size="icon" onClick={signOut}>
+        <LogOut className="h-4 w-4" />
+      </Button>
     </div>
   );
-};
+}

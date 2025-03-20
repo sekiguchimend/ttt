@@ -1,84 +1,67 @@
-import React, { useState } from 'react';
-import { useAuth } from '@/context/AuthContext';
+import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import MonthlyFinancialReport from './MonthlyFinancialReport';
-import YearlyFinancialReport from './YearlyFinancialReport';
+import { useFinancial } from '@/context/FinancialContext';
 
-const FinancialDashboard: React.FC = () => {
-  const { isAdmin } = useAuth();
-  const [activeTab, setActiveTab] = useState<string>("monthly");
-  
-  // State for year selection in monthly report
-  const currentYear = new Date().getFullYear();
-  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
-  
-  // State for year range selection in yearly report
-  const [yearRange, setYearRange] = useState<{start: number, end: number}>({
-    start: currentYear - 4,
-    end: currentYear
-  });
-  
-  // If not admin, show access denied message
-  if (!isAdmin) {
-    return (
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle>アクセス制限</CardTitle>
-          <CardDescription>
-            財務レポートは管理者のみがアクセスできます
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-center p-8">
-            <div className="text-center">
-              <div className="text-4xl mb-4">🔒</div>
-              <h3 className="text-lg font-medium mb-2">アクセス権限がありません</h3>
-              <p className="text-muted-foreground">
-                この機能を利用するには管理者権限が必要です。
-                <br />
-                詳細は管理者にお問い合わせください。
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-  
+const FinancialDashboard = () => {
+  const { transactions } = useFinancial();
+
+  // 集計データの計算
+  const totalRevenue = transactions.reduce((sum, t) => sum + t.amount, 0);
+  const totalCost = transactions.reduce((sum, t) => sum + t.cost, 0);
+  const totalExpenses = transactions.reduce((sum, t) => sum + t.expenses, 0);
+  const grossProfit = totalRevenue - totalCost;
+  const operatingProfit = grossProfit - totalExpenses;
+
+  // 利益率の計算
+  const grossProfitMargin = totalRevenue > 0 
+    ? (grossProfit / totalRevenue * 100).toFixed(1) 
+    : '0.0';
+  const operatingProfitMargin = totalRevenue > 0 
+    ? (operatingProfit / totalRevenue * 100).toFixed(1) 
+    : '0.0';
+
   return (
     <div className="space-y-6">
-      <Card className="mt-6">
-        <CardHeader>
-          <CardTitle>財務レポート</CardTitle>
-          <CardDescription>
-            売上、粗利、営業利益の詳細分析
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList className="grid w-full max-w-md grid-cols-2">
-              <TabsTrigger value="monthly">月次レポート</TabsTrigger>
-              <TabsTrigger value="yearly">年次レポート</TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value="monthly" className="pt-6">
-              <MonthlyFinancialReport 
-                year={selectedYear}
-                onYearChange={setSelectedYear}
-              />
-            </TabsContent>
-            
-            <TabsContent value="yearly" className="pt-6">
-              <YearlyFinancialReport 
-                startYear={yearRange.start}
-                endYear={yearRange.end}
-                onYearRangeChange={(start, end) => setYearRange({ start, end })}
-              />
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">売上高</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{totalRevenue.toLocaleString()}円</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">粗利</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{grossProfit.toLocaleString()}円</div>
+            <p className="text-xs text-muted-foreground">
+              粗利益率: {grossProfitMargin}%
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">営業利益</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{operatingProfit.toLocaleString()}円</div>
+            <p className="text-xs text-muted-foreground">
+              営業利益率: {operatingProfitMargin}%
+            </p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">経費</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{totalExpenses.toLocaleString()}円</div>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 };

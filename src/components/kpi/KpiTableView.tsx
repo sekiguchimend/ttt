@@ -1,710 +1,537 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useKpi } from '@/context/KpiContext';
 import { useAuth } from '@/context/AuthContext';
-import { KpiMetric, KPI_CATEGORIES } from '@/types/kpi';
+import { KpiMetric, KPI_CATEGORIES, KpiCategory } from '@/types/kpi';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { KpiForm } from './KpiForm';
-import { format, startOfWeek, endOfWeek, eachDayOfInterval, addDays, startOfMonth, endOfMonth, eachWeekOfInterval, getWeek, getMonth, getYear, isSameDay, isSameWeek, isSameMonth } from 'date-fns';
+import { 
+  format, addMonths, subMonths, startOfMonth, endOfMonth, 
+  eachDayOfInterval, getDay, isSameMonth, getDaysInMonth, 
+  isToday 
+} from 'date-fns';
 import { ja } from 'date-fns/locale';
-import { Edit, Plus, Save, X, Check, AlertCircle } from 'lucide-react';
+import { Plus, Edit, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
+import { supabase } from '@/lib/supabase';
+
+// 型定義
+type DailyKpiAchievement = {
+  id?: string;
+  kpi_id: string;
+  user_id: string;
+  date: string;
+  actual_value: number;
+  is_achieved: boolean;
+  notes?: string;
+};
+
+interface DailyPerformance {
+  date: string;
+  actualValue: number;
+  isAchieved: boolean;
+  notes?: string;
+}
 
 interface KpiTableViewProps {
   startDate?: Date;
   endDate?: Date;
 }
 
+const CATEGORY_LABELS: Record<KpiCategory, string> = {
+  sales: '営業',
+  development: '開発'
+};
+
+const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
+
 export const KpiTableView: React.FC<KpiTableViewProps> = ({
   startDate = new Date(2025, 2, 1), // デフォルトは2025年3月1日
   endDate = new Date(2030, 11, 31)  // デフォルトは2030年12月31日
 }) => {
+  // Context
   const { user } = useAuth();
-  const { userKpis, addKpi, updateKpi, getKpisByUser } = useKpi();
+  const { metrics, updateMetric, deleteMetric, addMetric } = useKpi();
+  const { toast } = useToast();
   
-  const [selectedPeriod, setSelectedPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
+  // State
   const [currentDate, setCurrentDate] = useState(new Date());
   const [isKpiDialogOpen, setIsKpiDialogOpen] = useState(false);
+  const [isDailyDialogOpen, setIsDailyDialogOpen] = useState(false);
+  const [selectedDay, setSelectedDay] = useState<Date | null>(null);
   const [selectedKpi, setSelectedKpi] = useState<KpiMetric | null>(null);
-  const [isEditMode, setIsEditMode] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [dailyPerformances, setDailyPerformances] = useState<Record<string, DailyPerformance>>({});
+  const [selectedPeriod, setSelectedPeriod] = useState<'daily' | 'weekly' | 'monthly'>('daily');
   const [editingKpiId, setEditingKpiId] = useState<string | null>(null);
   const [editValues, setEditValues] = useState<Record<string, number>>({});
-  const [editNotes, setEditNotes] = useState<Record<string, string>>({});
+  const [editDescriptions, setEditDescriptions] = useState<Record<string, string>>({});
+  const [isSaving, setIsSaving] = useState(false);
   
-  // 現在の日付範囲を取得
-  const getDateRange = () => {
-    if (selectedPeriod === 'daily') {
-      return {
-        start: currentDate,
-        end: currentDate,
-        title: format(currentDate, 'yyyy年M月d日', { locale: ja })
-      };
-    } else if (selectedPeriod === 'weekly') {
-      const start = startOfWeek(currentDate, { weekStartsOn: 1 }); // 月曜始まり
-      const end = endOfWeek(currentDate, { weekStartsOn: 1 });
-      return {
-        start,
-        end,
-        title: `${format(start, 'yyyy年M月d日', { locale: ja })} 〜 ${format(end, 'M月d日', { locale: ja })}`
-      };
-    } else {
-      const start = startOfMonth(currentDate);
-      const end = endOfMonth(currentDate);
-      return {
-        start,
-        end,
-        title: format(currentDate, 'yyyy年M月', { locale: ja })
-      };
-    }
-  };
+  // 月初と月末の日付を取得
+  const monthStart = startOfMonth(currentDate);
+  const monthEnd = endOfMonth(currentDate);
   
-  const dateRange = getDateRange();
+  // 月間の日付を配列として取得
+  const daysInMonth = useMemo(() => {
+    return eachDayOfInterval({ start: monthStart, end: monthEnd });
+  }, [monthStart, monthEnd]);
   
-  // 前の期間に移動
-  const goToPreviousPeriod = () => {
-    if (selectedPeriod === 'daily') {
-      setCurrentDate(prev => addDays(prev, -1));
-    } else if (selectedPeriod === 'weekly') {
-      setCurrentDate(prev => addDays(startOfWeek(prev, { weekStartsOn: 1 }), -7));
-    } else {
-      setCurrentDate(prev => {
-        const newDate = new Date(prev);
-        newDate.setMonth(prev.getMonth() - 1);
-        return newDate;
-      });
-    }
-  };
+  // 月の最初の日の曜日（0: 日曜日, 1: 月曜日, ..., 6: 土曜日）
+  const startDay = getDay(monthStart);
   
-  // 次の期間に移動
-  const goToNextPeriod = () => {
-    if (selectedPeriod === 'daily') {
-      setCurrentDate(prev => addDays(prev, 1));
-    } else if (selectedPeriod === 'weekly') {
-      setCurrentDate(prev => addDays(startOfWeek(prev, { weekStartsOn: 1 }), 7));
-    } else {
-      setCurrentDate(prev => {
-        const newDate = new Date(prev);
-        newDate.setMonth(prev.getMonth() + 1);
-        return newDate;
-      });
-    }
-  };
-  
-  // 特定の期間のKPIを取得
-  const getKpisForPeriod = () => {
-    if (!user) return [];
+  // 月ごとのKPIを取得
+  const monthlyKpis = useMemo(() => {
+    if (!user || !metrics) return [];
     
-    const kpis = getKpisByUser(user.id);
-    
-    return kpis.filter(kpi => {
+    return metrics.filter(kpi => {
       const kpiDate = new Date(kpi.date);
-      
-      if (selectedPeriod === 'daily') {
-        return isSameDay(kpiDate, dateRange.start);
-      } else if (selectedPeriod === 'weekly') {
-        return isSameWeek(kpiDate, dateRange.start, { weekStartsOn: 1 });
-      } else {
-        return isSameMonth(kpiDate, dateRange.start);
-      }
+      return isSameMonth(kpiDate, currentDate);
     });
-  };
+  }, [user, metrics, currentDate]);
   
-  // 特定の期間と特定のカテゴリのKPIを取得
-  const getKpisForPeriodAndCategory = () => {
-    const kpis = getKpisForPeriod();
-    if (!selectedCategory) return kpis;
-    return kpis.filter(kpi => kpi.category === selectedCategory);
-  };
+  // カテゴリでフィルタリングしたKPI
+  const filteredKpis = useMemo(() => {
+    if (!selectedCategory) return monthlyKpis;
+    return monthlyKpis.filter(kpi => kpi.category === selectedCategory);
+  }, [monthlyKpis, selectedCategory]);
   
-  // 編集モードの開始
-  const startEditing = (kpiId: string, currentValue: number, currentNotes: string = '') => {
-    setEditingKpiId(kpiId);
-    setEditValues({ ...editValues, [kpiId]: currentValue });
-    setEditNotes({ ...editNotes, [kpiId]: currentNotes || '' });
-  };
-  
-  // 編集の保存
-  const saveEdit = (kpi: KpiMetric) => {
-    if (editingKpiId === kpi.id) {
-      const newValue = editValues[kpi.id];
-      const newNotes = editNotes[kpi.id];
+  // 日単位の目標値を計算（月間目標を日数で割る）
+  const calculateDailyTargets = useMemo(() => {
+    const result = {};
+    
+    filteredKpis.forEach(kpi => {
+      const daysInCurrentMonth = getDaysInMonth(currentDate);
       
-      updateKpi(kpi.id, { 
-        value: newValue,
-        notes: newNotes
-      });
+      // 日ごとの目標値の計算（月間目標を日数で単純に割る）
+      const dailyMinimum = kpi.minimumTarget / daysInCurrentMonth;
+      const dailyStandard = kpi.standardTarget / daysInCurrentMonth;
+      const dailyStretch = kpi.stretchTarget / daysInCurrentMonth;
       
-      setEditingKpiId(null);
+      result[kpi.id] = {
+        name: kpi.name,
+        category: kpi.category,
+        dailyMinimum,
+        dailyStandard,
+        dailyStretch,
+        unit: kpi.unit
+      };
+    });
+    
+    return result;
+  }, [filteredKpis, currentDate]);
+  
+  // 日別実績データの読み込み
+  const loadDailyPerformances = async () => {
+    if (!user || filteredKpis.length === 0) return;
+    
+    try {
+      // 月の範囲のデータを取得
+      const startDateStr = format(monthStart, 'yyyy-MM-dd');
+      const endDateStr = format(monthEnd, 'yyyy-MM-dd');
+      
+      const { data, error } = await supabase
+        .from('daily_kpi_achievements')
+        .select('*')
+        .eq('user_id', user.id)
+        .gte('date', startDateStr)
+        .lte('date', endDateStr)
+        .in('kpi_id', filteredKpis.map(kpi => kpi.id));
+      
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        const performances = {};
+        
+        data.forEach(item => {
+          performances[`${item.date}-${item.kpi_id}`] = {
+            date: item.date,
+            actualValue: item.actual_value,
+            isAchieved: item.is_achieved,
+            notes: item.notes
+          };
+        });
+        
+        setDailyPerformances(performances);
+      }
+      } catch (error) {
+      console.error('Error loading daily performances:', error);
+        toast({
+          title: "エラー",
+        description: "日別実績データの読み込みに失敗しました。",
+          variant: "destructive",
+        });
+      }
+  };
+  
+  // Event Handlers
+  const goToPreviousMonth = () => {
+    setCurrentDate(prevDate => subMonths(prevDate, 1));
+  };
+  
+  const goToNextMonth = () => {
+    setCurrentDate(prevDate => addMonths(prevDate, 1));
+  };
+  
+  const openAddDialog = () => {
+    setSelectedKpi(null);
+    setIsKpiDialogOpen(true);
+  };
+  
+  const openEditDialog = (kpi: KpiMetric, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedKpi(kpi);
+    setIsKpiDialogOpen(true);
+  };
+  
+  const openDailyPerformanceDialog = (day: Date) => {
+    setSelectedDay(day);
+    setIsDailyDialogOpen(true);
+  };
+  
+  const handleDelete = async (kpi: KpiMetric, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (window.confirm('このKPIを削除してもよろしいですか？')) {
+      try {
+        await deleteMetric(kpi.id);
+        toast({
+          title: "成功",
+          description: "KPIを削除しました。",
+        });
+      } catch (error) {
+        toast({
+          title: "エラー",
+          description: "KPIの削除に失敗しました。",
+          variant: "destructive",
+        });
+      }
     }
   };
   
-  // 編集のキャンセル
-  const cancelEdit = () => {
-    setEditingKpiId(null);
-  };
-  
-  // KPIの追加または更新
-  const handleKpiSubmit = (data: any) => {
-    if (isEditMode && selectedKpi) {
-      updateKpi(selectedKpi.id, data);
+  const handleKpiSubmit = async (data: Omit<KpiMetric, 'id'>) => {
+    try {
+      // 月の1日を設定日として使用
+      const firstDayOfMonth = startOfMonth(currentDate);
+      const formattedDate = format(firstDayOfMonth, 'yyyy-MM-dd');
+      
+      if (selectedKpi) {
+        await updateMetric(selectedKpi.id, data);
+        toast({
+          title: "成功",
+          description: "KPIを更新しました。",
+        });
     } else {
-      addKpi(data);
+        await addMetric({
+          ...data,
+          userId: user?.id || '',
+          date: formattedDate
+        });
+        toast({
+          title: "成功",
+          description: "KPIを追加しました。",
+        });
     }
     setIsKpiDialogOpen(false);
     setSelectedKpi(null);
-    setIsEditMode(false);
+    } catch (error) {
+      toast({
+        title: "エラー",
+        description: selectedKpi ? "KPIの更新に失敗しました。" : "KPIの追加に失敗しました。",
+        variant: "destructive",
+      });
+    }
   };
   
-  // KPIの編集ダイアログを開く
-  const openEditDialog = (kpi: KpiMetric) => {
-    setSelectedKpi(kpi);
-    setIsEditMode(true);
-    setIsKpiDialogOpen(true);
-  };
-  
-  // 新規KPI追加ダイアログを開く
-  const openAddDialog = () => {
-    setSelectedKpi(null);
-    setIsEditMode(false);
-    setIsKpiDialogOpen(true);
-  };
-  
-  // 表示するKPI
-  const displayKpis = getKpisForPeriodAndCategory();
-  
-  // 日別テーブル
-  const DailyTable = () => {
-    return (
-      <div className="space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-lg font-medium">日別KPI</h3>
-          <Button onClick={openAddDialog} size="sm">
-            <Plus className="mr-2 h-4 w-4" />
-            KPI追加
-          </Button>
-        </div>
-        
-        {displayKpis.length > 0 ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>KPI名</TableHead>
-                <TableHead>カテゴリ</TableHead>
-                <TableHead>現在値</TableHead>
-                <TableHead>最低ライン</TableHead>
-                <TableHead>普通ライン</TableHead>
-                <TableHead>いいライン</TableHead>
-                <TableHead>メモ</TableHead>
-                <TableHead className="text-right">操作</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {displayKpis.map(kpi => (
-                <TableRow key={kpi.id}>
-                  <TableCell className="font-medium">{kpi.name}</TableCell>
-                  <TableCell>
-                    <Badge variant={kpi.category === 'sales' ? 'default' : kpi.category === 'development' ? 'secondary' : 'outline'}>
-                      {KPI_CATEGORIES.find(c => c.value === kpi.category)?.label || 'その他'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {editingKpiId === kpi.id ? (
-                      <Input
-                        type="number"
-                        value={editValues[kpi.id]}
-                        onChange={(e) => setEditValues({ ...editValues, [kpi.id]: Number(e.target.value) })}
-                        className="w-20"
-                      />
-                    ) : (
-                      <span className={`font-semibold ${
-                        kpi.value >= kpi.stretchTarget ? "text-green-600" :
-                        kpi.value >= kpi.standardTarget ? "text-green-500" :
-                        kpi.value >= kpi.minimumTarget ? "text-yellow-500" :
-                        "text-red-500"
-                      }`}>
-                        {kpi.value}{kpi.unit}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell>{kpi.minimumTarget}{kpi.unit}</TableCell>
-                  <TableCell>{kpi.standardTarget}{kpi.unit}</TableCell>
-                  <TableCell>{kpi.stretchTarget}{kpi.unit}</TableCell>
-                  <TableCell>
-                    {editingKpiId === kpi.id ? (
-                      <Input
-                        value={editNotes[kpi.id]}
-                        onChange={(e) => setEditNotes({ ...editNotes, [kpi.id]: e.target.value })}
-                        placeholder="メモを入力"
-                      />
-                    ) : (
-                      <span className="text-sm text-muted-foreground">{kpi.notes || '-'}</span>
-                    )}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {editingKpiId === kpi.id ? (
-                      <div className="flex justify-end gap-2">
-                        <Button variant="ghost" size="icon" onClick={() => saveEdit(kpi)}>
-                          <Save className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={cancelEdit}>
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="flex justify-end gap-2">
-                        <Button variant="ghost" size="icon" onClick={() => startEditing(kpi.id, kpi.value, kpi.notes)}>
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={() => openEditDialog(kpi)}>
-                          <AlertCircle className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        ) : (
-          <div className="text-center py-8 bg-muted/20 rounded-lg">
-            <p className="text-muted-foreground">この日のKPIデータがありません。「KPI追加」ボタンから追加してください。</p>
-          </div>
-        )}
-      </div>
-    );
-  };
-  
-  // 週別テーブル
-  const WeeklyTable = () => {
-    // 週の日付を取得
-    const weekDays = eachDayOfInterval({
-      start: dateRange.start,
-      end: dateRange.end
-    });
+  const handleDailyPerformanceSubmit = async (performanceData: Record<string, number>) => {
+    if (!selectedDay || !user) return;
     
-    // 週のKPIをグループ化
-    const groupedKpis = displayKpis.reduce((acc, kpi) => {
-      const kpiType = kpi.type;
-      if (!acc[kpiType]) {
-        acc[kpiType] = {
-          name: kpi.name,
-          type: kpi.type,
-          category: kpi.category,
-          unit: kpi.unit,
-          minimumTarget: kpi.minimumTarget,
-          standardTarget: kpi.standardTarget,
-          stretchTarget: kpi.stretchTarget,
-          days: {}
-        };
+    const dateKey = format(selectedDay, 'yyyy-MM-dd');
+    const newPerformances = { ...dailyPerformances };
+    
+    setIsSaving(true);
+    
+    try {
+      // 保存するデータを準備
+      const performanceRecords: DailyKpiAchievement[] = [];
+      
+      for (const kpiId of Object.keys(performanceData)) {
+        const actualValue = performanceData[kpiId];
+        const dailyTarget = calculateDailyTargets[kpiId];
+        const kpi = filteredKpis.find(k => k.id === kpiId);
+        
+        if (dailyTarget && kpi) {
+          // 目標達成の判定
+          const isAchieved = actualValue >= dailyTarget.dailyMinimum;
+          
+          // 日別実績を保存
+          const key = `${dateKey}-${kpiId}`;
+          newPerformances[key] = {
+            date: dateKey,
+            actualValue,
+            isAchieved
+          };
+          
+          // Supabaseに保存するレコードを準備
+          performanceRecords.push({
+            kpi_id: kpiId,
+            user_id: user.id,
+            date: dateKey,
+            actual_value: actualValue,
+            is_achieved: isAchieved
+          });
+        }
       }
       
-      const kpiDate = new Date(kpi.date);
-      const dateKey = format(kpiDate, 'yyyy-MM-dd');
-      acc[kpiType].days[dateKey] = {
-        id: kpi.id,
-        value: kpi.value,
-        notes: kpi.notes
-      };
+      // Supabaseに保存する
+      const { error } = await supabase
+        .from('daily_kpi_achievements')
+        .upsert(performanceRecords, { 
+          onConflict: 'kpi_id,date',  // kpi_idとdateの組み合わせで一意に特定
+          returning: 'minimal' 
+        });
       
-      return acc;
-    }, {} as Record<string, {
-      name: string;
-      type: string;
-      category: string;
-      unit: string;
-      minimumTarget: number;
-      standardTarget: number;
-      stretchTarget: number;
-      days: Record<string, { id: string; value: number; notes?: string; }>
-    }>);
-    
-    return (
-      <div className="space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-lg font-medium">週別KPI</h3>
-          <Button onClick={openAddDialog} size="sm">
-            <Plus className="mr-2 h-4 w-4" />
-            KPI追加
-          </Button>
-        </div>
-        
-        {Object.keys(groupedKpis).length > 0 ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>KPI名</TableHead>
-                <TableHead>カテゴリ</TableHead>
-                {weekDays.map(day => (
-                  <TableHead key={day.toISOString()}>
-                    {format(day, 'M/d (E)', { locale: ja })}
-                  </TableHead>
-                ))}
-                <TableHead>週合計</TableHead>
-                <TableHead>目標</TableHead>
-                <TableHead>達成率</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {Object.values(groupedKpis).map(kpi => {
-                // 週の合計を計算
-                let weekTotal = 0;
-                weekDays.forEach(day => {
-                  const dateKey = format(day, 'yyyy-MM-dd');
-                  if (kpi.days[dateKey]) {
-                    weekTotal += kpi.days[dateKey].value;
-                  }
-                });
-                
-                // 達成率を計算
-                const achievementRate = Math.round((weekTotal / kpi.standardTarget) * 100);
-                
-                return (
-                  <TableRow key={kpi.type}>
-                    <TableCell className="font-medium">{kpi.name}</TableCell>
-                    <TableCell>
-                      <Badge variant={kpi.category === 'sales' ? 'default' : kpi.category === 'development' ? 'secondary' : 'outline'}>
-                        {KPI_CATEGORIES.find(c => c.value === kpi.category)?.label || 'その他'}
-                      </Badge>
-                    </TableCell>
-                    {weekDays.map(day => {
-                      const dateKey = format(day, 'yyyy-MM-dd');
-                      const dayData = kpi.days[dateKey];
-                      
-                      return (
-                        <TableCell key={dateKey}>
-                          {dayData ? (
-                            <div className="text-center">
-                              <div className={`font-semibold ${
-                                dayData.value >= kpi.stretchTarget / 5 ? "text-green-600" :
-                                dayData.value >= kpi.standardTarget / 5 ? "text-green-500" :
-                                dayData.value >= kpi.minimumTarget / 5 ? "text-yellow-500" :
-                                "text-red-500"
-                              }`}>
-                                {dayData.value}{kpi.unit}
-                              </div>
-                              {editingKpiId === dayData.id ? (
-                                <div className="flex flex-col gap-1 mt-1">
-                                  <Input
-                                    type="number"
-                                    value={editValues[dayData.id]}
-                                    onChange={(e) => setEditValues({ ...editValues, [dayData.id]: Number(e.target.value) })}
-                                    className="w-16 h-7 text-xs"
-                                  />
-                                  <div className="flex justify-center gap-1">
-                                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => saveEdit({ ...dayData, type: kpi.type as any, name: kpi.name, category: kpi.category as any, unit: kpi.unit, minimumTarget: kpi.minimumTarget, standardTarget: kpi.standardTarget, stretchTarget: kpi.stretchTarget, date: dateKey, userId: user?.id || '' })}>
-                                      <Check className="h-3 w-3" />
-                                    </Button>
-                                    <Button variant="ghost" size="icon" className="h-6 w-6" onClick={cancelEdit}>
-                                      <X className="h-3 w-3" />
-                                    </Button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <Button 
-                                  variant="ghost" 
-                                  size="sm" 
-                                  className="h-6 text-xs mt-1"
-                                  onClick={() => startEditing(dayData.id, dayData.value, dayData.notes)}
-                                >
-                                  編集
-                                </Button>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="text-center">
-                              <span className="text-muted-foreground">-</span>
-                              <Button 
-                                variant="ghost" 
-                                size="sm" 
-                                className="h-6 text-xs mt-1"
-                                onClick={() => {
-                                  setSelectedKpi({
-                                    id: '',
-                                    userId: user?.id || '',
-                                    type: kpi.type as any,
-                                    name: kpi.name,
-                                    value: 0,
-                                    minimumTarget: kpi.minimumTarget,
-                                    standardTarget: kpi.standardTarget,
-                                    stretchTarget: kpi.stretchTarget,
-                                    unit: kpi.unit,
-                                    date: dateKey,
-                                    category: kpi.category as any
-                                  });
-                                  setIsEditMode(false);
-                                  setIsKpiDialogOpen(true);
-                                }}
-                              >
-                                追加
-                              </Button>
-                            </div>
-                          )}
-                        </TableCell>
-                      );
-                    })}
-                    <TableCell className="font-semibold">
-                      {weekTotal}{kpi.unit}
-                    </TableCell>
-                    <TableCell>
-                      {kpi.standardTarget}{kpi.unit}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 bg-muted rounded-full h-2">
-                          <div 
-                            className={`h-2 rounded-full ${
-                              achievementRate >= 100 ? "bg-green-500" : 
-                              achievementRate >= 70 ? "bg-yellow-500" : 
-                              "bg-red-500"
-                            }`}
-                            style={{ width: `${Math.min(achievementRate, 100)}%` }}
-                          />
-                        </div>
-                        <span className={`text-xs ${
-                          achievementRate >= 100 ? "text-green-600" : 
-                          achievementRate >= 70 ? "text-yellow-600" : 
-                          "text-red-600"
-                        }`}>
-                          {achievementRate}%
-                        </span>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        ) : (
-          <div className="text-center py-8 bg-muted/20 rounded-lg">
-            <p className="text-muted-foreground">この週のKPIデータがありません。「KPI追加」ボタンから追加してください。</p>
-          </div>
-        )}
-      </div>
-    );
+      if (error) throw error;
+      
+      // ローカルの状態を更新
+      setDailyPerformances(newPerformances);
+      setIsDailyDialogOpen(false);
+      
+      toast({
+        title: "成功",
+        description: "日別実績を保存しました。",
+      });
+    } catch (error) {
+      console.error('Error saving daily performances:', error);
+      toast({
+        title: "エラー",
+        description: "日別実績の保存に失敗しました。",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSaving(false);
+    }
   };
   
-  // 月別テーブル
-  const MonthlyTable = () => {
-    // 月の週を取得
-    const monthWeeks = eachWeekOfInterval({
-      start: dateRange.start,
-      end: dateRange.end
-    }, { weekStartsOn: 1 }); // 月曜始まり
+  // KPIの保存
+  const handleSave = async () => {
+    if (!user) return;
     
-    // 月のKPIをグループ化
-    const groupedKpis = displayKpis.reduce((acc, kpi) => {
-      const kpiType = kpi.type;
-      if (!acc[kpiType]) {
-        acc[kpiType] = {
-          name: kpi.name,
-          type: kpi.type,
-          category: kpi.category,
-          unit: kpi.unit,
-          minimumTarget: kpi.minimumTarget,
-          standardTarget: kpi.standardTarget,
-          stretchTarget: kpi.stretchTarget,
-          days: {}
-        };
-      }
-      
-      const kpiDate = new Date(kpi.date);
-      const dateKey = format(kpiDate, 'yyyy-MM-dd');
-      acc[kpiType].days[dateKey] = {
-        id: kpi.id,
-        value: kpi.value,
-        notes: kpi.notes
-      };
-      
-      return acc;
-    }, {} as Record<string, {
-      name: string;
-      type: string;
-      category: string;
-      unit: string;
-      minimumTarget: number;
-      standardTarget: number;
-      stretchTarget: number;
-      days: Record<string, { id: string; value: number; notes?: string; }>
-    }>);
-    
-    // 週ごとの合計を計算
-    const calculateWeekTotal = (kpi: any, weekStart: Date) => {
-      let total = 0;
-      const weekEnd = endOfWeek(weekStart, { weekStartsOn: 1 });
-      const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
-      
-      weekDays.forEach(day => {
-        if (getMonth(day) === getMonth(dateRange.start)) { // 同じ月の日だけ
-          const dateKey = format(day, 'yyyy-MM-dd');
-          if (kpi.days[dateKey]) {
-            total += kpi.days[dateKey].value;
-          }
+    setIsSaving(true);
+    try {
+      const updates = Object.entries(editValues).map(([kpiId, value]) => ({
+        user_id: user.id,
+        kpi_id: kpiId,
+        date: format(currentDate, 'yyyy-MM-dd'),
+        value: value,
+        description: editDescriptions[kpiId] || ''
+      }));
+
+      const { error } = await supabase
+        .from('daily_kpi_achievements')
+        .upsert(updates, {
+          onConflict: 'user_id,kpi_id,date'
+        });
+
+      if (error) throw error;
+
+      // ローカルの状態も更新
+      updates.forEach(update => {
+        const kpi = metrics.find(m => m.id === update.kpi_id);
+        if (kpi) {
+          updateMetric(update.kpi_id, {
+            ...kpi,
+            value: update.value,
+            description: update.description
+          });
         }
       });
+
+      setEditingKpiId(null);
+      setEditValues({});
+      setEditDescriptions({});
       
-      return total;
-    };
+      toast({
+        title: "成功",
+        description: "KPIを保存しました。",
+      });
+    } catch (error) {
+      console.error('Error saving KPIs:', error);
+      toast({
+        title: "エラー",
+        description: "KPIの保存に失敗しました。",
+        variant: "destructive",
+      });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+  
+  // Helper functions
+  const getCellBackgroundColor = (day: Date) => {
+    if (!isSameMonth(day, currentDate)) {
+      return "bg-gray-100";
+    }
+    
+    const dateKey = format(day, 'yyyy-MM-dd');
+    const dayPerformances = Object.keys(dailyPerformances)
+      .filter(key => key.startsWith(dateKey))
+      .map(key => dailyPerformances[key]);
+    
+    if (dayPerformances.length === 0) {
+      return isToday(day) ? "bg-blue-50" : "bg-white";
+    }
+    
+    // すべてのKPIが達成されているかチェック
+    const allAchieved = dayPerformances.every(perf => perf.isAchieved);
+    
+    // 一部のKPIが達成されているかチェック
+    const someAchieved = dayPerformances.some(perf => perf.isAchieved);
+    
+    if (allAchieved) {
+      return "bg-green-100";
+    } else if (someAchieved) {
+      return "bg-yellow-100";
+    } else {
+      return "bg-red-100";
+    }
+  };
+  
+  const renderCalendarCells = () => {
+    // 前月の日を埋める配列
+    const leadingDays = Array.from({ length: startDay }, (_, i) => null);
     
     return (
-      <div className="space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-lg font-medium">月別KPI</h3>
-          <Button onClick={openAddDialog} size="sm">
-            <Plus className="mr-2 h-4 w-4" />
-            KPI追加
-          </Button>
+      <>
+        {/* 曜日のヘッダー */}
+        {WEEKDAY_LABELS.map((day, index) => (
+          <div
+            key={`weekday-${index}`}
+            className={`text-center p-2 font-medium ${
+              index === 0 ? "text-red-500" : index === 6 ? "text-blue-500" : ""
+            }`}
+          >
+            {day}
         </div>
+        ))}
         
-        {Object.keys(groupedKpis).length > 0 ? (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>KPI名</TableHead>
-                <TableHead>カテゴリ</TableHead>
-                {monthWeeks.map((week, index) => {
-                  const weekEnd = endOfWeek(week, { weekStartsOn: 1 });
-                  return (
-                    <TableHead key={week.toISOString()}>
-                      第{index + 1}週<br/>
-                      <span className="text-xs text-muted-foreground">
-                        {format(week, 'M/d', { locale: ja })}〜{format(weekEnd, 'M/d', { locale: ja })}
-                      </span>
-                    </TableHead>
-                  );
-                })}
-                <TableHead>月合計</TableHead>
-                <TableHead>目標</TableHead>
-                <TableHead>達成率</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {Object.values(groupedKpis).map(kpi => {
-                // 月の合計を計算
-                let monthTotal = 0;
-                Object.values(kpi.days).forEach(day => {
-                  monthTotal += day.value;
-                });
-                
-                // 達成率を計算
-                const achievementRate = Math.round((monthTotal / (kpi.standardTarget * 4)) * 100); // 4週間分として計算
-                
-                return (
-                  <TableRow key={kpi.type}>
-                    <TableCell className="font-medium">{kpi.name}</TableCell>
-                    <TableCell>
-                      <Badge variant={kpi.category === 'sales' ? 'default' : kpi.category === 'development' ? 'secondary' : 'outline'}>
-                        {KPI_CATEGORIES.find(c => c.value === kpi.category)?.label || 'その他'}
-                      </Badge>
-                    </TableCell>
-                    {monthWeeks.map((week, index) => {
-                      const weekTotal = calculateWeekTotal(kpi, week);
-                      
-                      return (
-                        <TableCell key={week.toISOString()} className="text-center">
-                          <div className={`font-semibold ${
-                            weekTotal >= kpi.stretchTarget / 4 ? "text-green-600" :
-                            weekTotal >= kpi.standardTarget / 4 ? "text-green-500" :
-                            weekTotal >= kpi.minimumTarget / 4 ? "text-yellow-500" :
-                            "text-red-500"
-                          }`}>
-                            {weekTotal}{kpi.unit}
-                          </div>
-                          <Button 
-                            variant="ghost" 
-                            size="sm" 
-                            className="h-6 text-xs mt-1"
-                            onClick={() => {
-                              setCurrentDate(week);
-                              setSelectedPeriod('weekly');
-                            }}
-                          >
-                            詳細
-                          </Button>
-                        </TableCell>
-                      );
-                    })}
-                    <TableCell className="font-semibold">
-                      {monthTotal}{kpi.unit}
-                    </TableCell>
-                    <TableCell>
-                      {kpi.standardTarget * 4}{kpi.unit}
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 bg-muted rounded-full h-2">
-                          <div 
-                            className={`h-2 rounded-full ${
-                              achievementRate >= 100 ? "bg-green-500" : 
-                              achievementRate >= 70 ? "bg-yellow-500" : 
-                              "bg-red-500"
-                            }`}
-                            style={{ width: `${Math.min(achievementRate, 100)}%` }}
-                          />
-                        </div>
-                        <span className={`text-xs ${
-                          achievementRate >= 100 ? "text-green-600" : 
-                          achievementRate >= 70 ? "text-yellow-600" : 
-                          "text-red-600"
-                        }`}>
-                          {achievementRate}%
-                        </span>
+        {/* 前月の空白セル */}
+        {leadingDays.map((_, index) => (
+          <div key={`empty-${index}`} className="bg-gray-100 p-2 min-h-[100px]"></div>
+        ))}
+        
+        {/* 当月の日付セル */}
+        {daysInMonth.map(day => {
+          const dateKey = format(day, 'yyyy-MM-dd');
+          const dayNumber = day.getDate();
+          const dayOfWeek = getDay(day);
+          
+          // その日のパフォーマンスデータを取得
+          const dayPerformances = Object.keys(dailyPerformances)
+            .filter(key => key.startsWith(dateKey))
+            .map(key => {
+              const [date, kpiId] = key.split('-');
+              const kpi = filteredKpis.find(k => k.id === kpiId);
+              const dailyTarget = kpi ? calculateDailyTargets[kpi.id] : null;
+              return {
+                ...dailyPerformances[key],
+                kpiName: kpi ? kpi.name : '',
+                kpiUnit: kpi ? kpi.unit : '',
+                targetValue: dailyTarget ? Math.round(dailyTarget.dailyMinimum * 10) / 10 : 0
+              };
+            });
+            
+          return (
+            <div
+              key={`day-${dateKey}`}
+              className={`p-2 border border-gray-200 min-h-[100px] ${getCellBackgroundColor(day)} hover:bg-gray-50 cursor-pointer transition-colors ${isToday(day) ? "border-blue-500" : ""}`}
+              onClick={() => openDailyPerformanceDialog(day)}
+            >
+              <div className={`text-right mb-1 font-medium ${
+                dayOfWeek === 0 ? "text-red-500" : dayOfWeek === 6 ? "text-blue-500" : ""
+              }`}>
+                {dayNumber}
+              </div>
+              
+              {/* 実績表示 */}
+              <div className="space-y-1 text-xs">
+                {dayPerformances.map((perf, idx) => (
+                  <div 
+                    key={`perf-${idx}`} 
+                    className={`p-1 rounded ${
+                      perf.isAchieved ? "bg-green-200 text-green-800" : "bg-red-200 text-red-800"
+                    }`}
+                  >
+                    <div className="font-medium">{perf.kpiName}</div>
+                    <div className="flex justify-between items-center">
+                      <span>実績: {perf.actualValue}{perf.kpiUnit}</span>
+                      <span>目標: {perf.targetValue}{perf.kpiUnit}</span>
                       </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        ) : (
-          <div className="text-center py-8 bg-muted/20 rounded-lg">
-            <p className="text-muted-foreground">この月のKPIデータがありません。「KPI追加」ボタンから追加してください。</p>
+                      </div>
+                ))}
+                
+                {dayPerformances.length === 0 && filteredKpis.length > 0 && (
+                  <div className="text-center p-1 text-muted-foreground">
+                    クリックして実績入力
           </div>
         )}
       </div>
+            </div>
+          );
+        })}
+      </>
     );
   };
   
+  // Effects
+  useEffect(() => {
+    loadDailyPerformances();
+  }, [user, filteredKpis, monthStart, monthEnd]);
+  
   return (
-    <div className="space-y-4">
-      <Card>
+    <Card className="w-full">
         <CardHeader>
           <div className="flex justify-between items-center">
             <div>
-              <CardTitle>KPIテーブル</CardTitle>
+            <CardTitle>KPI カレンダー</CardTitle>
               <CardDescription>
-                期間ごとのKPI達成状況を表形式で確認・編集できます
+              {format(currentDate, 'yyyy年M月', { locale: ja })}
               </CardDescription>
             </div>
+          
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={goToPreviousPeriod}
-                  disabled={new Date(dateRange.start) <= startDate}
+                onClick={goToPreviousMonth}
+                className="h-8 w-8"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m15 18-6-6 6-6"/></svg>
+                <ChevronLeft className="h-4 w-4" />
                 </Button>
-                <span className="text-lg font-medium min-w-40 text-center">
-                  {dateRange.title}
-                </span>
+              
                 <Button
                   variant="outline"
                   size="icon"
-                  onClick={goToNextPeriod}
-                  disabled={new Date(dateRange.end) >= endDate}
+                onClick={goToNextMonth}
+                className="h-8 w-8"
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4"><path d="m9 18 6-6-6-6"/></svg>
+                <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
+            
+            <Button onClick={openAddDialog} size="sm">
+              <Plus className="mr-2 h-4 w-4" />
+              月間KPI追加
+            </Button>
             </div>
           </div>
           
+        {/* カテゴリフィルター */}
+        {KPI_CATEGORIES.length > 0 && (
           <div className="flex flex-wrap gap-2 mt-4">
             <Badge
               variant={selectedCategory === '' ? "default" : "outline"}
@@ -715,58 +542,216 @@ export const KpiTableView: React.FC<KpiTableViewProps> = ({
             </Badge>
             {KPI_CATEGORIES.map(category => (
               <Badge
-                key={category.value}
-                variant={selectedCategory === category.value ? "default" : "outline"}
+                key={category}
+                variant={selectedCategory === category ? "default" : "outline"}
                 className="cursor-pointer"
-                onClick={() => setSelectedCategory(category.value)}
+                onClick={() => setSelectedCategory(category)}
               >
-                {category.label}
+                {CATEGORY_LABELS[category]}
               </Badge>
             ))}
           </div>
-        </CardHeader>
+        )}
         
-        <CardContent>
-          <Tabs value={selectedPeriod} onValueChange={(value) => setSelectedPeriod(value as any)}>
-            <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="daily">日別</TabsTrigger>
-              <TabsTrigger value="weekly">週別</TabsTrigger>
-              <TabsTrigger value="monthly">月別</TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value="daily" className="pt-6">
-              <DailyTable />
-            </TabsContent>
-            
-            <TabsContent value="weekly" className="pt-6">
-              <WeeklyTable />
-            </TabsContent>
-            
-            <TabsContent value="monthly" className="pt-6">
-              <MonthlyTable />
-            </TabsContent>
-          </Tabs>
-        </CardContent>
-      </Card>
+        {/* 月別KPI一覧とその日の目標 */}
+        <div className="mt-4 border rounded-lg p-4 bg-gray-50">
+          <div className="flex justify-between items-center mb-3">
+            <h3 className="text-base font-medium">当月のKPI</h3>
+            <div className="text-sm text-muted-foreground">
+              月間目標 → 日毎の目標
+            </div>
+          </div>
+          
+          {filteredKpis.length > 0 ? (
+            <div className="space-y-3">
+              {filteredKpis.map(kpi => {
+                const dailyTarget = calculateDailyTargets[kpi.id];
+                const dailyValue = dailyTarget ? Math.round(dailyTarget.dailyMinimum * 10) / 10 : 0;
+                
+                return (
+                  <div 
+                    key={kpi.id}
+                    className="flex items-center justify-between p-3 border bg-white rounded-md"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <Badge variant={kpi.category === 'sales' ? 'default' : 'secondary'}>
+                          {CATEGORY_LABELS[kpi.category]}
+                        </Badge>
+                        <span className="font-medium">{kpi.name}</span>
+                      </div>
+                      
+                      <div className="text-sm">
+                        <span className="text-muted-foreground">月間目標: </span>
+                        <span className="font-medium">{kpi.minimumTarget}{kpi.unit}</span>
+                        <span className="text-muted-foreground ml-4">1日あたり: </span>
+                        <span className="font-medium">{dailyValue}{kpi.unit}</span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={(e) => openEditDialog(kpi, e)}
+                        className="h-8 px-2"
+                      >
+                        <Edit className="h-4 w-4 mr-1" />
+                        編集
+                      </Button>
+                      
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={(e) => handleDelete(kpi, e)}
+                        className="h-8 w-8 text-red-500 hover:text-red-600"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-6 text-muted-foreground bg-white rounded-md border">
+              KPIが設定されていません。「月間KPI追加」ボタンから新しいKPIを追加してください。
+            </div>
+          )}
+        </div>
+      </CardHeader>
       
-      {/* KPI追加・編集ダイアログ */}
+      <CardContent>
+        {/* カレンダー表示 */}
+        <div className="grid grid-cols-7 gap-1">
+          {renderCalendarCells()}
+        </div>
+        
+        {/* 凡例 */}
+        <div className="mt-4 flex items-center gap-4 text-sm">
+          <div className="flex items-center">
+            <div className="w-4 h-4 bg-green-100 rounded mr-2"></div>
+            <span>すべて達成</span>
+          </div>
+          <div className="flex items-center">
+            <div className="w-4 h-4 bg-yellow-100 rounded mr-2"></div>
+            <span>一部達成</span>
+          </div>
+          <div className="flex items-center">
+            <div className="w-4 h-4 bg-red-100 rounded mr-2"></div>
+            <span>未達成</span>
+          </div>
+          <div className="flex items-center">
+            <div className="w-4 h-4 bg-white border rounded mr-2"></div>
+            <span>未入力</span>
+          </div>
+        </div>
+        </CardContent>
+      
+      {/* KPI設定ダイアログ */}
       <Dialog open={isKpiDialogOpen} onOpenChange={setIsKpiDialogOpen}>
-        <DialogContent className="sm:max-w-[500px]">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {isEditMode ? 'KPI編集' : 'KPI追加'}
+              {selectedKpi ? 'KPIの編集' : '新規KPIの追加'}
             </DialogTitle>
             <DialogDescription>
-              {selectedKpi?.date && `${new Date(selectedKpi.date).getFullYear()}年${new Date(selectedKpi.date).getMonth() + 1}月${new Date(selectedKpi.date).getDate()}日`}のKPI情報を{isEditMode ? '編集' : '追加'}します
+              {selectedKpi ? 'KPIの情報を編集します。' : '新しいKPIを追加します。'}
             </DialogDescription>
           </DialogHeader>
+          
           <KpiForm
             onSubmit={handleKpiSubmit}
             onCancel={() => setIsKpiDialogOpen(false)}
-            initialData={isEditMode ? selectedKpi : { date: format(dateRange.start, 'yyyy-MM-dd') }}
+            initialData={selectedKpi}
           />
         </DialogContent>
       </Dialog>
-    </div>
+      
+      {/* 日別実績入力ダイアログ */}
+      <Dialog open={isDailyDialogOpen} onOpenChange={setIsDailyDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              日別実績入力
+            </DialogTitle>
+            <DialogDescription>
+              {selectedDay && format(selectedDay, 'yyyy年M月d日', { locale: ja })}の実績値を入力してください
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4 py-2">
+            {filteredKpis.length > 0 ? (
+              filteredKpis.map(kpi => {
+                const dateKey = selectedDay ? format(selectedDay, 'yyyy-MM-dd') : '';
+                const performanceKey = `${dateKey}-${kpi.id}`;
+                const existingValue = dailyPerformances[performanceKey]?.actualValue || 0;
+                const dailyTarget = calculateDailyTargets[kpi.id];
+                
+                return (
+                  <div key={kpi.id} className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <div className="font-medium">{kpi.name}</div>
+                        <div className="text-sm text-muted-foreground">
+                          目標: {dailyTarget ? Math.round(dailyTarget.dailyMinimum * 10) / 10 : 0}{kpi.unit}
+                        </div>
+                      </div>
+                      <div className="w-24">
+                        <Input
+                          type="number"
+                          id={`actual-${kpi.id}`}
+                          defaultValue={existingValue}
+                          min={0}
+                          step={0.1}
+                          placeholder="実績値"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="text-center py-4 text-muted-foreground">
+                KPIが設定されていません。先に月間KPIを追加してください。
+              </div>
+            )}
+            
+            <div className="flex justify-end gap-2 pt-4">
+              <Button 
+                variant="outline" 
+                onClick={() => setIsDailyDialogOpen(false)}
+                disabled={isSaving}
+              >
+                キャンセル
+              </Button>
+              <Button 
+                onClick={() => {
+                  // フォームから値を取得
+                  const performanceData = {};
+                  filteredKpis.forEach(kpi => {
+                    const input = document.getElementById(`actual-${kpi.id}`) as HTMLInputElement;
+                    if (input) {
+                      performanceData[kpi.id] = parseFloat(input.value) || 0;
+                    }
+                  });
+                  handleDailyPerformanceSubmit(performanceData);
+                }}
+                disabled={isSaving}
+              >
+                {isSaving ? (
+                  <>
+                    <span className="mr-2">保存中...</span>
+                    <span className="animate-spin">⟳</span>
+                  </>
+                ) : (
+                  "保存"
+                )}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 };

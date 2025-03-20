@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { PlusCircle, Filter } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { PlusCircle, Filter, RefreshCw } from 'lucide-react';
 import { useKpi } from '@/context/KpiContext';
 import { useAuth } from '@/context/AuthContext';
 import { KpiCard } from '@/components/ui/KpiCard';
@@ -14,7 +14,15 @@ import {
   SelectTrigger,
   SelectValue
 } from "@/components/ui/select";
-import { KPI_CATEGORIES } from '@/types/kpi';
+import { KPI_CATEGORIES, KpiCategory } from '@/types/kpi';
+import { format, startOfMonth, endOfMonth } from 'date-fns';
+import { supabase } from '@/lib/supabase';
+import { useToast } from '@/hooks/use-toast';
+
+const CATEGORY_LABELS: Record<KpiCategory, string> = {
+  sales: '営業',
+  development: '開発'
+};
 
 interface KpiOverviewProps {
   openAddDialog: () => void;
@@ -30,9 +38,13 @@ export const KpiOverview: React.FC<KpiOverviewProps> = ({
   setActiveTab
 }) => {
   const { isAdmin, user } = useAuth();
-  const { userKpis, getKpisByUser, getKpisByUserAndCategory, getUserKpiCategories } = useKpi();
+  const { metrics, fetchMetrics } = useKpi();
+  const { toast } = useToast();
   const [selectedCategory, setSelectedCategory] = useState<string>('');
   const [showDetailedProgress, setShowDetailedProgress] = useState(false);
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [isLoading, setIsLoading] = useState(false);
+  const [monthlyAchievements, setMonthlyAchievements] = useState<Record<string, { total: number, achievedDays: number, daysRecorded: number }>>({});
   
   // サンプルユーザーリスト (実際のアプリでは動的に取得)
   const users = [
@@ -42,14 +54,135 @@ export const KpiOverview: React.FC<KpiOverviewProps> = ({
   
   // 表示するユーザーID
   const targetUserId = isAdmin && selectedUserId ? selectedUserId : user?.id || '';
+
+  // 月初と月末の日付を取得
+  const monthStart = useMemo(() => startOfMonth(currentDate), [currentDate]);
+  const monthEnd = useMemo(() => endOfMonth(currentDate), [currentDate]);
   
+  // ユーザーのKPIを取得
+  const userKpis = useMemo(() => {
+    if (!targetUserId || !metrics) return [];
+    return metrics.filter(kpi => kpi.userId === targetUserId);
+  }, [targetUserId, metrics]);
+
   // ユーザーのKPIカテゴリを取得
-  const userCategories = getUserKpiCategories(targetUserId);
+  const userCategories = useMemo(() => {
+    const categories = new Set<KpiCategory>();
+    userKpis.forEach(kpi => {
+      categories.add(kpi.category);
+    });
+    return Array.from(categories);
+  }, [userKpis]);
   
   // 表示するKPIデータ
-  const displayKpis = selectedCategory
-    ? getKpisByUserAndCategory(targetUserId, selectedCategory)
-    : getKpisByUser(targetUserId);
+  const displayKpis = useMemo(() => {
+    if (!selectedCategory) return userKpis;
+    return userKpis.filter(kpi => kpi.category === selectedCategory);
+  }, [userKpis, selectedCategory]);
+
+  // 月間の実績データをロード
+  const loadMonthlyAchievements = async () => {
+    if (!user || userKpis.length === 0) return;
+    
+    setIsLoading(true);
+    try {
+      const startDateStr = format(monthStart, 'yyyy-MM-dd');
+      const endDateStr = format(monthEnd, 'yyyy-MM-dd');
+      
+      const { data, error } = await supabase
+        .from('daily_kpi_achievements')
+        .select('*')
+        .eq('user_id', targetUserId)
+        .gte('date', startDateStr)
+        .lte('date', endDateStr)
+        .in('kpi_id', userKpis.map(kpi => kpi.id));
+      
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        const achievements = {};
+        
+        data.forEach(item => {
+          if (!achievements[item.kpi_id]) {
+            achievements[item.kpi_id] = {
+              total: 0,
+              achievedDays: 0,
+              daysRecorded: 0
+            };
+          }
+          
+          achievements[item.kpi_id].total += parseFloat(item.actual_value);
+          achievements[item.kpi_id].daysRecorded++;
+          if (item.is_achieved) {
+            achievements[item.kpi_id].achievedDays++;
+          }
+        });
+        
+        setMonthlyAchievements(achievements);
+      } else {
+        setMonthlyAchievements({});
+      }
+    } catch (error) {
+      console.error('Error loading monthly achievements:', error);
+      toast({
+        title: "エラー",
+        description: "月間実績データの読み込みに失敗しました。",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // 月間集計を更新
+  const updateMonthlyAchievements = async () => {
+    if (!user || userKpis.length === 0) return;
+    
+    setIsLoading(true);
+    try {
+      // 月間集計の更新
+      const summaryUpdates = Object.entries(monthlyAchievements).map(([kpiId, summary]) => {
+        const kpi = userKpis.find(k => k.id === kpiId);
+        return {
+          id: kpiId,
+          value: summary.total,
+          updated_at: new Date().toISOString()
+        };
+      });
+      
+      if (summaryUpdates.length > 0) {
+        const { error } = await supabase
+          .from('kpi_metrics')
+          .upsert(summaryUpdates, { 
+            onConflict: 'id'
+          });
+          
+        if (error) throw error;
+        
+        // メトリクスを再取得
+        await fetchMetrics();
+        
+        toast({
+          title: "成功",
+          description: "KPI実績を更新しました。",
+        });
+      }
+    } catch (error) {
+      console.error('Error updating monthly achievements:', error);
+      toast({
+        title: "エラー",
+        description: "KPI実績の更新に失敗しました。",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // ユーザーIDやカレンダー月が変わったときにデータをロード
+  useEffect(() => {
+    loadMonthlyAchievements();
+  }, [targetUserId, monthStart, monthEnd, userKpis]);
     
   return (
     <Card className="mb-6">
@@ -64,7 +197,7 @@ export const KpiOverview: React.FC<KpiOverviewProps> = ({
                 : 'あなたのKPI'}
             </CardTitle>
             <CardDescription>
-              現在の進捗状況と目標達成度
+              {format(currentDate, 'yyyy年M月')}の進捗状況と目標達成度
             </CardDescription>
           </div>
           
@@ -93,6 +226,16 @@ export const KpiOverview: React.FC<KpiOverviewProps> = ({
             >
               <Filter className="h-4 w-4" />
             </Button>
+
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={updateMonthlyAchievements}
+              disabled={isLoading}
+              title="実績を更新"
+            >
+              <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            </Button>
           </div>
         </div>
         
@@ -112,7 +255,7 @@ export const KpiOverview: React.FC<KpiOverviewProps> = ({
                 className="cursor-pointer"
                 onClick={() => setSelectedCategory(category)}
               >
-                {KPI_CATEGORIES.find(c => c.value === category)?.label || category}
+                {CATEGORY_LABELS[category]}
               </Badge>
             ))}
           </div>
@@ -122,30 +265,51 @@ export const KpiOverview: React.FC<KpiOverviewProps> = ({
       <CardContent>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {displayKpis.length > 0 ? (
-            displayKpis.map(kpi => (
-              <KpiCard
-                key={kpi.id}
-                title={kpi.name}
-                value={kpi.value}
-                format={kpi.type === 'sales' ? 'currency' : 'number'}
-                minimumTarget={kpi.minimumTarget}
-                standardTarget={kpi.standardTarget}
-                stretchTarget={kpi.stretchTarget}
-                targetValue={kpi.target} // 後方互換性のため
-                suffix={kpi.unit}
-                description={`目標: ${kpi.standardTarget || kpi.target}${kpi.unit}`}
-                trend={
-                  kpi.value >= (kpi.stretchTarget || (kpi.standardTarget ? kpi.standardTarget * 1.3 : kpi.target ? kpi.target * 1.3 : 0))
-                    ? 'up'
-                    : kpi.value >= (kpi.standardTarget || kpi.target || 0)
+            displayKpis.map(kpi => {
+              // 月間実績データがあれば使用する
+              const monthlyData = monthlyAchievements[kpi.id];
+              const actualValue = monthlyData ? monthlyData.total : kpi.value || 0;
+              
+              // 達成率の計算
+              const achievementRate = Math.round((actualValue / kpi.minimumTarget) * 100);
+              
+              // 達成日数と記録日数
+              const achievedDays = monthlyData?.achievedDays || 0;
+              const daysRecorded = monthlyData?.daysRecorded || 0;
+              const dailyAchievementRate = daysRecorded > 0 
+                ? Math.round((achievedDays / daysRecorded) * 100) 
+                : 0;
+
+              return (
+                <KpiCard
+                  key={kpi.id}
+                  title={kpi.name}
+                  value={actualValue}
+                  format={kpi.type === 'sales' ? 'currency' : 'number'}
+                  minimumTarget={kpi.minimumTarget}
+                  standardTarget={kpi.standardTarget}
+                  stretchTarget={kpi.stretchTarget}
+                  targetValue={kpi.standardTarget} // 後方互換性のため
+                  suffix={kpi.unit}
+                  description={
+                    monthlyData 
+                      ? `目標: ${kpi.standardTarget}${kpi.unit} | 達成日: ${achievedDays}/${daysRecorded}日 (${dailyAchievementRate}%)`
+                      : `目標: ${kpi.standardTarget}${kpi.unit}`
+                  }
+                  trend={
+                    actualValue >= kpi.stretchTarget
                       ? 'up'
-                      : kpi.value >= (kpi.minimumTarget || (kpi.standardTarget ? kpi.standardTarget * 0.7 : kpi.target ? kpi.target * 0.7 : 0))
-                        ? 'neutral'
-                        : 'down'
-                }
-                showDetailedProgress={showDetailedProgress}
-              />
-            ))
+                      : actualValue >= kpi.standardTarget
+                        ? 'up'
+                        : actualValue >= kpi.minimumTarget
+                          ? 'neutral'
+                          : 'down'
+                  }
+                  showDetailedProgress={showDetailedProgress}
+                  achievementPercentage={achievementRate}
+                />
+              );
+            })
           ) : (
             <div className="col-span-full text-center py-8 text-muted-foreground">
               KPIデータがありません。「KPI管理」タブでKPIを追加してください。
@@ -154,15 +318,7 @@ export const KpiOverview: React.FC<KpiOverviewProps> = ({
         </div>
       </CardContent>
       
-      <CardFooter>
-        <Button onClick={() => {
-          setActiveTab("manage");
-          setTimeout(openAddDialog, 100);
-        }}>
-          <PlusCircle className="mr-2 h-4 w-4" />
-          新しいKPIを追加
-        </Button>
-      </CardFooter>
+     
     </Card>
   );
 };

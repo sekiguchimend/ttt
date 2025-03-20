@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ChevronLeft, ChevronRight, Calendar, Edit, Info } from 'lucide-react';
 import { useKpi } from '@/context/KpiContext';
 import { useAuth } from '@/context/AuthContext';
-import { KpiMetric, KPI_CATEGORIES } from '@/types/kpi';
+import { KpiMetric, KpiCategory, KPI_CATEGORIES, KPI_TYPE_OPTIONS } from '@/types/kpi';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -25,16 +25,21 @@ interface KpiCalendarViewProps {
   endDate?: Date;   // カレンダーの終了日
 }
 
+const CATEGORY_LABELS: Record<KpiCategory, string> = {
+  sales: '営業',
+  development: '開発'
+};
+
 export const KpiCalendarView: React.FC<KpiCalendarViewProps> = ({
   startDate = new Date(2025, 2, 1), // デフォルトは2025年3月1日
   endDate = new Date(2030, 11, 31)  // デフォルトは2030年12月31日
 }) => {
   const { user } = useAuth();
-  const { userKpis, addKpi, updateKpi, getKpisByUser } = useKpi();
+  const { metrics, addMetric, updateMetric } = useKpi();
   
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<string>('');
-  const [selectedCategory, setSelectedCategory] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<KpiCategory | ''>('');
   const [isKpiDialogOpen, setIsKpiDialogOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [selectedKpi, setSelectedKpi] = useState<KpiMetric | null>(null);
@@ -110,8 +115,10 @@ export const KpiCalendarView: React.FC<KpiCalendarViewProps> = ({
   const getKpisForDate = (dateString: string) => {
     if (!user) return [];
     
-    const kpis = getKpisByUser(user.id);
-    return kpis.filter(kpi => kpi.date === dateString);
+    return metrics.filter(metric => 
+      metric.userId === user.id && 
+      metric.date === dateString
+    );
   };
   
   // 特定の日付と特定のカテゴリのKPIを取得
@@ -122,15 +129,19 @@ export const KpiCalendarView: React.FC<KpiCalendarViewProps> = ({
   };
   
   // KPIの追加または更新
-  const handleKpiSubmit = (data: any) => {
-    if (isEditMode && selectedKpi) {
-      updateKpi(selectedKpi.id, data);
-    } else {
-      addKpi(data);
+  const handleKpiSubmit = async (data: Omit<KpiMetric, 'id'>) => {
+    try {
+      if (isEditMode && selectedKpi) {
+        await updateMetric(selectedKpi.id, data);
+      } else {
+        await addMetric(data);
+      }
+      setIsKpiDialogOpen(false);
+      setSelectedKpi(null);
+      setIsEditMode(false);
+    } catch (error) {
+      console.error('Error submitting KPI:', error);
     }
-    setIsKpiDialogOpen(false);
-    setSelectedKpi(null);
-    setIsEditMode(false);
   };
   
   // KPIの編集ダイアログを開く
@@ -156,6 +167,53 @@ export const KpiCalendarView: React.FC<KpiCalendarViewProps> = ({
   
   // 選択された日付のKPI
   const selectedDateKpis = selectedDate ? getKpisForDateAndCategory(selectedDate, selectedCategory) : [];
+  
+  // KPIの詳細ダイアログ
+  const KpiDetailDialog: React.FC<{
+    kpi: KpiMetric;
+    isOpen: boolean;
+    onClose: () => void;
+  }> = ({ kpi, isOpen, onClose }) => {
+    return (
+      <Dialog open={isOpen} onOpenChange={onClose}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{kpi.name}</DialogTitle>
+            <DialogDescription>
+              <div className="space-y-2 mt-4">
+                <div>
+                  <span className="font-medium">カテゴリー：</span>
+                  {CATEGORY_LABELS[kpi.category]}
+                </div>
+                <div>
+                  <span className="font-medium">タイプ：</span>
+                  {KPI_TYPE_OPTIONS.find(opt => opt.value === kpi.type)?.label}
+                </div>
+                <div>
+                  <span className="font-medium">目標値：</span>
+                  <ul className="list-disc list-inside ml-4">
+                    <li>最低目標：{kpi.minimumTarget}{kpi.unit}</li>
+                    <li>標準目標：{kpi.standardTarget}{kpi.unit}</li>
+                    <li>ストレッチ目標：{kpi.stretchTarget}{kpi.unit}</li>
+                  </ul>
+                </div>
+                <div>
+                  <span className="font-medium">実績値：</span>
+                  {kpi.value}{kpi.unit}
+                </div>
+                {kpi.description && (
+                  <div>
+                    <span className="font-medium">備考：</span>
+                    {kpi.description}
+                  </div>
+                )}
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+    );
+  };
   
   return (
     <div className="space-y-4">
@@ -201,12 +259,12 @@ export const KpiCalendarView: React.FC<KpiCalendarViewProps> = ({
             </Badge>
             {KPI_CATEGORIES.map(category => (
               <Badge
-                key={category.value}
-                variant={selectedCategory === category.value ? "default" : "outline"}
+                key={category}
+                variant={selectedCategory === category ? "default" : "outline"}
                 className="cursor-pointer"
-                onClick={() => setSelectedCategory(category.value)}
+                onClick={() => setSelectedCategory(category)}
               >
-                {category.label}
+                {CATEGORY_LABELS[category]}
               </Badge>
             ))}
           </div>
@@ -259,27 +317,36 @@ export const KpiCalendarView: React.FC<KpiCalendarViewProps> = ({
                   </div>
                   
                   <div className="mt-1 space-y-1 overflow-hidden">
-                    {dayKpis.slice(0, 2).map(kpi => (
+                    {dayKpis.map((kpi, kpiIndex) => (
                       <div
-                        key={kpi.id}
-                        className={`text-xs p-1 rounded truncate ${
-                          kpi.category === 'sales' ? 'bg-blue-50 text-blue-700' :
-                          kpi.category === 'development' ? 'bg-green-50 text-green-700' :
-                          'bg-gray-50 text-gray-700'
-                        }`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openDetailDialog(kpi);
-                        }}
+                        key={`${kpi.id}-${kpiIndex}`}
+                        className="flex items-center gap-1 text-xs truncate"
                       >
-                        {kpi.name}: {kpi.value}{kpi.unit}
+                        <div className="flex-1 truncate">
+                          {kpi.name}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openEditDialog(kpi);
+                            }}
+                            className="p-1 hover:bg-muted rounded-sm"
+                          >
+                            <Edit className="h-3 w-3" />
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openDetailDialog(kpi);
+                            }}
+                            className="p-1 hover:bg-muted rounded-sm"
+                          >
+                            <Info className="h-3 w-3" />
+                          </button>
+                        </div>
                       </div>
                     ))}
-                    {dayKpis.length > 2 && (
-                      <div className="text-xs text-muted-foreground text-center">
-                        他 {dayKpis.length - 2} 件
-                      </div>
-                    )}
                   </div>
                 </div>
               );
@@ -308,130 +375,16 @@ export const KpiCalendarView: React.FC<KpiCalendarViewProps> = ({
       </Dialog>
       
       {/* KPI詳細ダイアログ */}
-      <Dialog open={isKpiDetailDialogOpen} onOpenChange={setIsKpiDetailDialogOpen}>
-        <DialogContent className="sm:max-w-[500px]">
-          <DialogHeader>
-            <DialogTitle>KPI詳細</DialogTitle>
-            <DialogDescription>
-              {selectedKpi && `${new Date(selectedKpi.date).getFullYear()}年${new Date(selectedKpi.date).getMonth() + 1}月${new Date(selectedKpi.date).getDate()}日`}
-            </DialogDescription>
-          </DialogHeader>
-          
-          {selectedKpi && (
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h3 className="text-lg font-medium">{selectedKpi.name}</h3>
-                  <p className="text-sm text-muted-foreground">
-                    {KPI_CATEGORIES.find(c => c.value === selectedKpi.category)?.label || 'その他'}
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => {
-                    setIsKpiDetailDialogOpen(false);
-                    setTimeout(() => openEditDialog(selectedKpi), 100);
-                  }}
-                >
-                  <Edit className="h-4 w-4" />
-                </Button>
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">現在の値</p>
-                  <p className="text-xl font-semibold">{selectedKpi.value}{selectedKpi.unit}</p>
-                </div>
-                <div className="space-y-1">
-                  <p className="text-sm text-muted-foreground">目標値</p>
-                  <p className="text-xl font-semibold">{selectedKpi.standardTarget}{selectedKpi.unit}</p>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>進捗状況</span>
-                  <span>{Math.min(Math.round((selectedKpi.value / selectedKpi.standardTarget) * 100), 100)}%</span>
-                </div>
-                <div className="h-2 w-full bg-muted rounded-full">
-                  <div
-                    className={`h-2 rounded-full ${
-                      selectedKpi.value >= selectedKpi.stretchTarget ? "bg-green-600" :
-                      selectedKpi.value >= selectedKpi.standardTarget ? "bg-green-500" :
-                      selectedKpi.value >= selectedKpi.minimumTarget ? "bg-yellow-500" :
-                      "bg-red-500"
-                    }`}
-                    style={{
-                      width: `${Math.min((selectedKpi.value / selectedKpi.standardTarget) * 100, 100)}%`
-                    }}
-                  />
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-3 gap-4 text-sm">
-                <div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">最低ライン</span>
-                    <span>{selectedKpi.minimumTarget}{selectedKpi.unit}</span>
-                  </div>
-                  <div className="h-1 w-full bg-muted rounded-full mt-1">
-                    <div
-                      className={`h-1 rounded-full ${
-                        selectedKpi.value >= selectedKpi.minimumTarget ? "bg-green-500" : "bg-red-500"
-                      }`}
-                      style={{
-                        width: `${Math.min((selectedKpi.value / selectedKpi.minimumTarget) * 100, 100)}%`
-                      }}
-                    />
-                  </div>
-                </div>
-                
-                <div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">普通ライン</span>
-                    <span>{selectedKpi.standardTarget}{selectedKpi.unit}</span>
-                  </div>
-                  <div className="h-1 w-full bg-muted rounded-full mt-1">
-                    <div
-                      className={`h-1 rounded-full ${
-                        selectedKpi.value >= selectedKpi.standardTarget ? "bg-green-500" : "bg-yellow-500"
-                      }`}
-                      style={{
-                        width: `${Math.min((selectedKpi.value / selectedKpi.standardTarget) * 100, 100)}%`
-                      }}
-                    />
-                  </div>
-                </div>
-                
-                <div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">いいライン</span>
-                    <span>{selectedKpi.stretchTarget}{selectedKpi.unit}</span>
-                  </div>
-                  <div className="h-1 w-full bg-muted rounded-full mt-1">
-                    <div
-                      className={`h-1 rounded-full ${
-                        selectedKpi.value >= selectedKpi.stretchTarget ? "bg-green-600" : "bg-blue-500"
-                      }`}
-                      style={{
-                        width: `${Math.min((selectedKpi.value / selectedKpi.stretchTarget) * 100, 100)}%`
-                      }}
-                    />
-                  </div>
-                </div>
-              </div>
-              
-              {selectedKpi.notes && (
-                <div className="space-y-1 mt-4">
-                  <p className="text-sm text-muted-foreground">メモ</p>
-                  <p className="text-sm p-2 bg-muted/20 rounded">{selectedKpi.notes}</p>
-                </div>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      {selectedKpi && (
+        <KpiDetailDialog
+          kpi={selectedKpi}
+          isOpen={isKpiDetailDialogOpen}
+          onClose={() => {
+            setIsKpiDetailDialogOpen(false);
+            setSelectedKpi(null);
+          }}
+        />
+      )}
     </div>
   );
 };

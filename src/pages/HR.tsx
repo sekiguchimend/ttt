@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
@@ -27,7 +26,8 @@ const HR = () => {
     addEmployee, 
     updateEmployee, 
     addPayment, 
-    updatePayment, 
+    updatePayment,
+    getEmployeeById,
     loading: employeeLoading 
   } = useEmployee();
   const navigate = useNavigate();
@@ -73,7 +73,6 @@ const HR = () => {
 
   // 従業員編集ダイアログを開く
   const openEditEmployeeDialog = (id: string) => {
-    const { getEmployeeById } = useEmployee();
     const employee = getEmployeeById(id);
     if (employee) {
       setCurrentEmployee(employee);

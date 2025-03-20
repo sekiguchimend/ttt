@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { KPI_TYPE_OPTIONS, KPI_CATEGORIES, KpiMetric, KpiType } from '@/types/kpi';
+import { KPI_TYPE_OPTIONS, KPI_CATEGORIES, KpiMetric, KpiType, KpiCategory } from '@/types/kpi';
 import { useAuth } from '@/context/AuthContext';
 import { Button } from '@/components/ui/button';
 import { DialogFooter } from "@/components/ui/dialog";
@@ -16,8 +16,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmployeeSelect } from './EmployeeSelect';
 
+const CATEGORY_LABELS: Record<KpiCategory, string> = {
+  sales: '営業',
+  development: '開発'
+};
+
 interface KpiFormProps {
-  onSubmit: (data: any) => void;
+  onSubmit: (data: Omit<KpiMetric, 'id'>) => void;
   onCancel: () => void;
   initialData?: Partial<KpiMetric> | null;
 }
@@ -36,24 +41,22 @@ export const KpiForm: React.FC<KpiFormProps> = ({
     type: initialData?.type || 'appointments' as KpiType,
     name: initialData?.name || '',
     value: initialData?.value || 0,
-    minimumTarget: initialData?.minimumTarget || initialData?.target ? Math.round(initialData.target * 0.7) : 0,
-    standardTarget: initialData?.standardTarget || initialData?.target || 0,
-    stretchTarget: initialData?.stretchTarget || initialData?.target ? Math.round(initialData.target * 1.3) : 0,
+    minimumTarget: initialData?.minimumTarget || 0,
+    standardTarget: initialData?.standardTarget || 0,
+    stretchTarget: initialData?.stretchTarget || 0,
     unit: initialData?.unit || '件',
     date: initialData?.date || today,
-    notes: initialData?.notes || '',
-    category: initialData?.category || 'sales'
+    category: initialData?.category || 'sales' as KpiCategory,
+    description: initialData?.description || ''
   });
 
-  // KPIタイプが変更されたとき、名前とユニットを自動設定
+  // KPIタイプが変更されたとき、名前を自動設定
   const handleTypeChange = (type: KpiType) => {
     const selectedType = KPI_TYPE_OPTIONS.find(option => option.value === type);
     setFormData(prev => ({
       ...prev,
       type,
-      name: type !== 'custom' ? selectedType?.label || '' : prev.name,
-      unit: type !== 'custom' ? selectedType?.unit || '' : prev.unit,
-      category: (selectedType?.category as 'sales' | 'development' | 'other') || 'other'
+      name: selectedType?.label || prev.name
     }));
   };
 
@@ -95,28 +98,7 @@ export const KpiForm: React.FC<KpiFormProps> = ({
               <SelectValue placeholder="KPIタイプを選択" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="header-sales" disabled className="font-bold">
-                営業KPI
-              </SelectItem>
-              {KPI_TYPE_OPTIONS.filter(option => option.category === 'sales').map(option => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-              
-              <SelectItem value="header-dev" disabled className="font-bold mt-2">
-                受託開発KPI
-              </SelectItem>
-              {KPI_TYPE_OPTIONS.filter(option => option.category === 'development').map(option => (
-                <SelectItem key={option.value} value={option.value}>
-                  {option.label}
-                </SelectItem>
-              ))}
-              
-              <SelectItem value="header-other" disabled className="font-bold mt-2">
-                その他
-              </SelectItem>
-              {KPI_TYPE_OPTIONS.filter(option => option.category === 'other').map(option => (
+              {KPI_TYPE_OPTIONS.map(option => (
                 <SelectItem key={option.value} value={option.value}>
                   {option.label}
                 </SelectItem>
@@ -129,15 +111,15 @@ export const KpiForm: React.FC<KpiFormProps> = ({
           <Label htmlFor="category">カテゴリ</Label>
           <Select
             value={formData.category}
-            onValueChange={(value: 'sales' | 'development' | 'other') => setFormData(prev => ({ ...prev, category: value }))}
+            onValueChange={(value: KpiCategory) => setFormData(prev => ({ ...prev, category: value }))}
           >
             <SelectTrigger>
               <SelectValue placeholder="カテゴリを選択" />
             </SelectTrigger>
             <SelectContent>
               {KPI_CATEGORIES.map(category => (
-                <SelectItem key={category.value} value={category.value}>
-                  {category.label}
+                <SelectItem key={category} value={category}>
+                  {CATEGORY_LABELS[category]}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -145,18 +127,16 @@ export const KpiForm: React.FC<KpiFormProps> = ({
         </div>
       </div>
       
-      {formData.type === 'custom' && (
-        <div className="space-y-2">
-          <Label htmlFor="name">KPI名</Label>
-          <Input
-            id="name"
-            value={formData.name}
-            onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-            placeholder="KPI名を入力"
-            required
-          />
-        </div>
-      )}
+      <div className="space-y-2">
+        <Label htmlFor="name">KPI名</Label>
+        <Input
+          id="name"
+          value={formData.name}
+          onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
+          placeholder="KPI名を入力"
+          required
+        />
+      </div>
       
       <div className="space-y-2">
         <Label htmlFor="value">現在の達成値</Label>
@@ -170,9 +150,7 @@ export const KpiForm: React.FC<KpiFormProps> = ({
             min="0"
             required
           />
-          {formData.type !== 'custom' && (
-            <span className="flex items-center ml-2">{formData.unit}</span>
-          )}
+          <span className="flex items-center ml-2">{formData.unit}</span>
         </div>
       </div>
       
@@ -198,9 +176,7 @@ export const KpiForm: React.FC<KpiFormProps> = ({
                   min="0"
                   required
                 />
-                {formData.type !== 'custom' && (
-                  <span className="flex items-center ml-2">{formData.unit}</span>
-                )}
+                <span className="flex items-center ml-2">{formData.unit}</span>
               </div>
               <p className="text-sm text-muted-foreground">
                 最低限達成すべき目標値を設定します。
@@ -221,9 +197,7 @@ export const KpiForm: React.FC<KpiFormProps> = ({
                   min="0"
                   required
                 />
-                {formData.type !== 'custom' && (
-                  <span className="flex items-center ml-2">{formData.unit}</span>
-                )}
+                <span className="flex items-center ml-2">{formData.unit}</span>
               </div>
               <p className="text-sm text-muted-foreground">
                 通常期待される目標値を設定します。
@@ -244,54 +218,33 @@ export const KpiForm: React.FC<KpiFormProps> = ({
                   min="0"
                   required
                 />
-                {formData.type !== 'custom' && (
-                  <span className="flex items-center ml-2">{formData.unit}</span>
-                )}
+                <span className="flex items-center ml-2">{formData.unit}</span>
               </div>
               <p className="text-sm text-muted-foreground">
-                高い成果を上げるための目標値を設定します。
+                高い目標を達成した場合の値を設定します。
               </p>
             </div>
           </TabsContent>
         </Tabs>
       </div>
       
-      {formData.type === 'custom' && (
-        <div className="space-y-2">
-          <Label htmlFor="unit">単位</Label>
-          <Input
-            id="unit"
-            value={formData.unit}
-            onChange={(e) => setFormData(prev => ({ ...prev, unit: e.target.value }))}
-            placeholder="件、円、%など"
-          />
-        </div>
-      )}
-      
       <div className="space-y-2">
-        <Label htmlFor="date">日付</Label>
-        <Input
-          id="date"
-          type="date"
-          value={formData.date}
-          onChange={(e) => setFormData(prev => ({ ...prev, date: e.target.value }))}
-          required
-        />
-      </div>
-      
-      <div className="space-y-2">
-        <Label htmlFor="notes">メモ</Label>
+        <Label htmlFor="description">備考</Label>
         <Textarea
-          id="notes"
-          value={formData.notes}
-          onChange={(e) => setFormData(prev => ({ ...prev, notes: e.target.value }))}
-          placeholder="メモや詳細情報を入力（任意）"
+          id="description"
+          value={formData.description}
+          onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
+          placeholder="備考を入力"
         />
       </div>
       
       <DialogFooter>
-        <Button type="button" variant="outline" onClick={onCancel}>キャンセル</Button>
-        <Button type="submit">{initialData ? '更新' : '追加'}</Button>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          キャンセル
+        </Button>
+        <Button type="submit">
+          {initialData ? '更新' : '追加'}
+        </Button>
       </DialogFooter>
     </form>
   );

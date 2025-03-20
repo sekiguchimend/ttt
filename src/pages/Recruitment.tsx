@@ -17,9 +17,13 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle
+  DialogTitle,
+  DialogTrigger
 } from "@/components/ui/dialog";
 import { InterviewChecklist, InterviewChecklistList } from '@/components/recruitment/InterviewChecklist';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { toast } from '@/components/ui/use-toast';
+import { supabase } from '@/lib/supabase';
 
 // 候補者の型定義
 interface Candidate {
@@ -35,6 +39,8 @@ interface Candidate {
   evaluations: Evaluation[];
   tasks: Task[];
   checklists: ChecklistResponse[];
+  created_at: string;
+  updated_at: string;
 }
 
 // 評価の型定義
@@ -112,95 +118,14 @@ const Recruitment = () => {
   const [isAddChecklistDialogOpen, setIsAddChecklistDialogOpen] = useState(false);
   const [isViewChecklistDialogOpen, setIsViewChecklistDialogOpen] = useState(false);
   const [selectedChecklist, setSelectedChecklist] = useState<ChecklistResponse | null>(null);
-  
-  // サンプル候補者データ
-  const [candidates, setCandidates] = useState<Candidate[]>([
-    {
-      id: '1',
-      name: '山田太郎',
-      position: 'フロントエンドエンジニア',
-      status: '二次面接',
-      source: 'リファラル',
-      appliedDate: '2023-06-01',
-      email: 'yamada@example.com',
-      phone: '090-1234-5678',
-      notes: '前職ではReactを使った開発経験あり',
-      evaluations: [
-        {
-          id: '1',
-          candidateId: '1',
-          interviewerId: '1',
-          interviewerName: '鈴木部長',
-          date: '2023-06-05',
-          stage: '一次面接',
-          technicalScore: 4,
-          communicationScore: 4,
-          cultureFitScore: 5,
-          overallScore: 4,
-          feedback: '技術力が高く、コミュニケーション能力も良好。チームにマッチする可能性が高い。'
-        }
-      ],
-      tasks: [
-        {
-          id: '1',
-          candidateId: '1',
-          assigneeId: '1',
-          assigneeName: '鈴木部長',
-          title: '二次面接日程調整',
-          date: '2023-06-10',
-          completed: true,
-          notes: '6/15 14:00に設定'
-        }
-      ],
-      checklists: [
-        {
-          id: '1',
-          candidateId: '1',
-          interviewerId: '1',
-          interviewerName: '鈴木部長',
-          date: '2023-06-05T10:00:00Z',
-          items: [
-            { itemId: '1', checked: true, notes: '適切な服装で時間通りに来訪' },
-            { itemId: '2', checked: true, notes: '質問に対して明確に回答できていた' },
-            { itemId: '3', checked: true, notes: 'Reactの知識が豊富' },
-            { itemId: '4', checked: true, notes: '業界動向についても理解あり' },
-            { itemId: '5', checked: true, notes: '前職でのチーム開発経験を詳しく説明' },
-            { itemId: '6', checked: true, notes: '論理的思考力あり' },
-            { itemId: '7', checked: true, notes: '当社の事業に強い関心を示した' },
-            { itemId: '8', checked: true, notes: '新しい技術への学習意欲が高い' },
-            { itemId: '9', checked: true, notes: '当社の価値観に共感している' },
-            { itemId: '10', checked: true, notes: '具体的な質問が多く準備されていた' }
-          ],
-          overallNotes: '非常に優秀な候補者。技術力、コミュニケーション能力ともに高く、チームにもフィットしそう。次の面接に進めるべき。',
-          completed: true
-        }
-      ]
-    },
-    {
-      id: '2',
-      name: '佐藤花子',
-      position: 'バックエンドエンジニア',
-      status: '一次面接',
-      source: '転職サイト',
-      appliedDate: '2023-06-03',
-      email: 'sato@example.com',
-      notes: 'Pythonでの開発経験が豊富',
-      evaluations: [],
-      tasks: [
-        {
-          id: '2',
-          candidateId: '2',
-          assigneeId: '1',
-          assigneeName: '鈴木部長',
-          title: '一次面接実施',
-          date: '2023-06-12',
-          completed: false,
-          notes: 'オンラインで実施予定'
-        }
-      ],
-      checklists: []
-    }
-  ]);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [newCandidate, setNewCandidate] = useState({
+    name: '',
+    email: '',
+    position: '',
+    status: '応募'
+  });
   
   // サンプル採用KPIデータ
   const [recruitmentKpis, setRecruitmentKpis] = useState<RecruitmentKpi[]>([
@@ -248,17 +173,66 @@ const Recruitment = () => {
     );
   }
   
+  // 候補者一覧を取得
+  const loadCandidates = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('candidates')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setCandidates(data || []);
+    } catch (error) {
+      console.error('Error loading candidates:', error);
+      toast({
+        title: "エラー",
+        description: "候補者一覧の取得に失敗しました。",
+        variant: "destructive",
+      });
+    }
+  };
+
+  useEffect(() => {
+    loadCandidates();
+  }, []);
+  
   // 候補者追加
-  const handleAddCandidate = (candidate: Omit<Candidate, 'id' | 'evaluations' | 'tasks'>) => {
-    const newCandidate = {
-      ...candidate,
-      id: Math.random().toString(36).substring(2, 9),
-      evaluations: [],
-      tasks: []
-    };
-    
-    setCandidates([...candidates, newCandidate]);
-    setIsAddCandidateDialogOpen(false);
+  const handleAddCandidate = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('candidates')
+        .insert([newCandidate])
+        .select();
+
+      if (error) throw error;
+
+      toast({
+        title: "成功",
+        description: "候補者を追加しました。",
+      });
+
+      // フォームをリセット
+      setNewCandidate({
+        name: '',
+        email: '',
+        position: '',
+        status: '応募'
+      });
+
+      // ダイアログを閉じる
+      setIsAddDialogOpen(false);
+
+      // 候補者一覧を更新
+      loadCandidates();
+    } catch (error) {
+      console.error('Error adding candidate:', error);
+      toast({
+        title: "エラー",
+        description: "候補者の追加に失敗しました。",
+        variant: "destructive",
+      });
+    }
   };
   
   // 候補者編集
@@ -416,9 +390,70 @@ const Recruitment = () => {
                 採用候補者の管理と進捗状況の確認
               </CardDescription>
             </div>
-            <Button onClick={() => setIsAddCandidateDialogOpen(true)}>
-              候補者追加
-            </Button>
+            <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+              <DialogTrigger asChild>
+                <Button>候補者追加</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>新規候補者追加</DialogTitle>
+                  <DialogDescription>
+                    新しい候補者の情報を入力してください。
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="name">名前</Label>
+                    <Input
+                      id="name"
+                      value={newCandidate.name}
+                      onChange={(e) => setNewCandidate({ ...newCandidate, name: e.target.value })}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="email">メールアドレス</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      value={newCandidate.email}
+                      onChange={(e) => setNewCandidate({ ...newCandidate, email: e.target.value })}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="position">応募職種</Label>
+                    <Input
+                      id="position"
+                      value={newCandidate.position}
+                      onChange={(e) => setNewCandidate({ ...newCandidate, position: e.target.value })}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="status">ステータス</Label>
+                    <Select
+                      value={newCandidate.status}
+                      onValueChange={(value) => setNewCandidate({ ...newCandidate, status: value })}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="ステータスを選択" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="応募">応募</SelectItem>
+                        <SelectItem value="書類選考">書類選考</SelectItem>
+                        <SelectItem value="一次面接">一次面接</SelectItem>
+                        <SelectItem value="二次面接">二次面接</SelectItem>
+                        <SelectItem value="最終面接">最終面接</SelectItem>
+                        <SelectItem value="内定">内定</SelectItem>
+                        <SelectItem value="不採用">不採用</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setIsAddDialogOpen(false)}>キャンセル</Button>
+                  <Button onClick={handleAddCandidate}>追加</Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
         </CardHeader>
         <CardContent>
@@ -591,7 +626,7 @@ const Recruitment = () => {
                 
                 <div>
                   <h3 className="text-lg font-medium mb-2">評価サマリー</h3>
-                  {candidate.evaluations.length > 0 ? (
+                  {candidate.evaluations && candidate.evaluations.length > 0 ? (
                     <div className="space-y-2">
                       {candidate.evaluations.map(evaluation => (
                         <div key={evaluation.id} className="p-2 border rounded-md">
@@ -663,7 +698,7 @@ const Recruitment = () => {
                 </Button>
               </div>
               
-              {candidate.evaluations.length > 0 ? (
+              {candidate.evaluations && candidate.evaluations.length > 0 ? (
                 <div className="space-y-4">
                   {candidate.evaluations.map(evaluation => (
                     <Card key={evaluation.id} className="p-4">
@@ -730,7 +765,7 @@ const Recruitment = () => {
                 </Button>
               </div>
               
-              {candidate.checklists.length > 0 ? (
+              {candidate.checklists && candidate.checklists.length > 0 ? (
                 <div className="space-y-4">
                   <InterviewChecklistList
                     responses={candidate.checklists}
@@ -758,11 +793,11 @@ const Recruitment = () => {
                 </Button>
               </div>
               
-              {candidate.tasks.length > 0 ? (
+              {candidate.tasks && candidate.tasks.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[30px]"></TableHead>
+                    <TableHead className="w-[30px]"></TableHead>
                       <TableHead>タスク</TableHead>
                       <TableHead>担当者</TableHead>
                       <TableHead>日付</TableHead>

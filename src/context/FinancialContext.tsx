@@ -97,7 +97,7 @@ const SAMPLE_FINANCIAL_DATA: FinancialTransaction[] = [
 interface FinancialContextType {
   transactions: FinancialTransaction[];
   addTransaction: (transaction: Omit<FinancialTransaction, 'id'>) => void;
-  updateTransaction: (transaction: FinancialTransaction) => void;
+  updateTransaction: (id: string, transaction: Partial<FinancialTransaction>) => void;
   deleteTransaction: (id: string) => void;
   getMonthlySummaries: (year: number, filters?: FinancialReportFilters) => MonthlySummary[];
   getYearlySummaries: (startYear: number, endYear: number, filters?: FinancialReportFilters) => YearlySummary[];
@@ -119,145 +119,119 @@ const FinancialContext = createContext<FinancialContextType>({
     costs: 0,
     expenses: 0,
     grossProfit: 0,
-    operatingProfit: 0,
-    monthlySummaries: []
+    operatingProfit: 0
   }),
-  loading: true
+  loading: false
 });
 
 export const FinancialProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [transactions, setTransactions] = useState<FinancialTransaction[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [transactions, setTransactions] = useState<FinancialTransaction[]>(SAMPLE_FINANCIAL_DATA);
+  const [loading, setLoading] = useState(false);
 
-  // Load initial data
-  useEffect(() => {
-    // In a real app, this would be an API call
-    const loadData = async () => {
-      await new Promise(resolve => setTimeout(resolve, 500)); // Simulate API delay
-      setTransactions(SAMPLE_FINANCIAL_DATA);
-      setLoading(false);
-    };
-
-    loadData();
-  }, []);
-
-  // Add a new transaction
+  // 取引の追加
   const addTransaction = (transaction: Omit<FinancialTransaction, 'id'>) => {
     const newTransaction = {
       ...transaction,
       id: Math.random().toString(36).substring(2, 9)
     };
-    setTransactions(prev => [...prev, newTransaction]);
+    setTransactions([...transactions, newTransaction]);
   };
 
-  // Update an existing transaction
-  const updateTransaction = (transaction: FinancialTransaction) => {
-    setTransactions(prev => 
-      prev.map(t => t.id === transaction.id ? transaction : t)
-    );
+  // 取引の更新
+  const updateTransaction = (id: string, transaction: Partial<FinancialTransaction>) => {
+    setTransactions(transactions.map(t => 
+      t.id === id ? { ...t, ...transaction } : t
+    ));
   };
 
-  // Delete a transaction
+  // 取引の削除
   const deleteTransaction = (id: string) => {
-    setTransactions(prev => prev.filter(t => t.id !== id));
+    setTransactions(transactions.filter(t => t.id !== id));
   };
 
-  // Helper function to filter transactions based on filters
-  const filterTransactions = (transactions: FinancialTransaction[], filters?: FinancialReportFilters) => {
-    if (!filters) return transactions;
-
-    return transactions.filter(t => {
-      // Filter by date range
-      if (filters.startDate && t.date < filters.startDate) return false;
-      if (filters.endDate && t.date > filters.endDate) return false;
-      
-      // Filter by employee
-      if (filters.employeeId && t.employeeId !== filters.employeeId) return false;
-      
-      // Filter by category
-      if (filters.category && t.category !== filters.category) return false;
-      
-      return true;
-    });
-  };
-
-  // Get monthly summaries for a specific year
+  // 月次サマリーの取得
   const getMonthlySummaries = (year: number, filters?: FinancialReportFilters): MonthlySummary[] => {
-    const filteredTransactions = filterTransactions(transactions, filters);
-    
-    // Initialize monthly summaries
-    const monthlySummaries: MonthlySummary[] = Array.from({ length: 12 }, (_, i) => ({
-      year,
-      month: i + 1,
-      sales: 0,
-      costs: 0,
-      expenses: 0,
-      grossProfit: 0,
-      operatingProfit: 0
-    }));
-    
-    // Calculate monthly totals
-    filteredTransactions.forEach(t => {
-      const date = new Date(t.date);
-      const transactionYear = date.getFullYear();
-      const month = date.getMonth(); // 0-11
-      
-      if (transactionYear === year) {
-        monthlySummaries[month].sales += t.amount;
-        monthlySummaries[month].costs += t.cost;
-        monthlySummaries[month].expenses += t.expenses;
-      }
-    });
-    
-    // Calculate profits
-    monthlySummaries.forEach(summary => {
-      summary.grossProfit = summary.sales - summary.costs;
-      summary.operatingProfit = summary.grossProfit - summary.expenses;
-    });
-    
-    return monthlySummaries;
-  };
+    const filteredTransactions = filters?.employeeId
+      ? transactions.filter(t => t.employeeId === filters.employeeId)
+      : transactions;
 
-  // Get yearly summaries for a range of years
-  const getYearlySummaries = (startYear: number, endYear: number, filters?: FinancialReportFilters): YearlySummary[] => {
-    const years = Array.from({ length: endYear - startYear + 1 }, (_, i) => startYear + i);
-    
-    return years.map(year => {
-      const monthlySummaries = getMonthlySummaries(year, filters);
-      
-      // Calculate yearly totals
-      const yearlySummary: YearlySummary = {
+    return Array.from({ length: 12 }, (_, month) => {
+      const monthTransactions = filteredTransactions.filter(t => {
+        const transactionDate = new Date(t.date);
+        return transactionDate.getFullYear() === year && transactionDate.getMonth() === month;
+      });
+
+      const sales = monthTransactions.reduce((sum, t) => sum + t.amount, 0);
+      const costs = monthTransactions.reduce((sum, t) => sum + t.cost, 0);
+      const expenses = monthTransactions.reduce((sum, t) => sum + t.expenses, 0);
+      const grossProfit = sales - costs;
+      const operatingProfit = grossProfit - expenses;
+
+      return {
         year,
-        sales: monthlySummaries.reduce((sum, m) => sum + m.sales, 0),
-        costs: monthlySummaries.reduce((sum, m) => sum + m.costs, 0),
-        expenses: monthlySummaries.reduce((sum, m) => sum + m.expenses, 0),
-        grossProfit: monthlySummaries.reduce((sum, m) => sum + m.grossProfit, 0),
-        operatingProfit: monthlySummaries.reduce((sum, m) => sum + m.operatingProfit, 0),
-        monthlySummaries
+        month: month + 1, // 1-12の範囲に変換
+        sales,
+        costs,
+        expenses,
+        grossProfit,
+        operatingProfit
       };
-      
-      return yearlySummary;
     });
   };
 
-  // Get current year summary
+  // 年次サマリーの取得
+  const getYearlySummaries = (startYear: number, endYear: number, filters?: FinancialReportFilters): YearlySummary[] => {
+    const filteredTransactions = filters?.employeeId
+      ? transactions.filter(t => t.employeeId === filters.employeeId)
+      : transactions;
+
+    return Array.from({ length: endYear - startYear + 1 }, (_, index) => {
+      const year = startYear + index;
+      const yearTransactions = filteredTransactions.filter(t => 
+        new Date(t.date).getFullYear() === year
+      );
+
+      const sales = yearTransactions.reduce((sum, t) => sum + t.amount, 0);
+      const costs = yearTransactions.reduce((sum, t) => sum + t.cost, 0);
+      const expenses = yearTransactions.reduce((sum, t) => sum + t.expenses, 0);
+      const grossProfit = sales - costs;
+      const operatingProfit = grossProfit - expenses;
+
+      return {
+        year,
+        sales,
+        costs,
+        expenses,
+        grossProfit,
+        operatingProfit,
+        monthlySummaries: getMonthlySummaries(year, filters)
+      };
+    });
+  };
+
+  // 現在の年のサマリーを取得
   const getCurrentYearSummary = (filters?: FinancialReportFilters): YearlySummary => {
     const currentYear = new Date().getFullYear();
-    const yearlySummaries = getYearlySummaries(currentYear, currentYear, filters);
-    return yearlySummaries[0];
+    const summaries = getYearlySummaries(currentYear, currentYear, filters);
+    return {
+      ...summaries[0],
+      monthlySummaries: getMonthlySummaries(currentYear, filters)
+    };
+  };
+
+  const value = {
+    transactions,
+    addTransaction,
+    updateTransaction,
+    deleteTransaction,
+    getMonthlySummaries,
+    getYearlySummaries,
+    getCurrentYearSummary,
+    loading
   };
 
   return (
-    <FinancialContext.Provider value={{
-      transactions,
-      addTransaction,
-      updateTransaction,
-      deleteTransaction,
-      getMonthlySummaries,
-      getYearlySummaries,
-      getCurrentYearSummary,
-      loading
-    }}>
+    <FinancialContext.Provider value={value}>
       {children}
     </FinancialContext.Provider>
   );

@@ -2,7 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { useEmployee } from '@/context/EmployeeContext';
-import { KpiMetric, KpiType, KPI_TYPE_OPTIONS, KPI_CATEGORIES } from '@/types/kpi';
+import { 
+  KpiMetric, 
+  KpiType, 
+  KpiTypeOption,
+  KPI_TYPE_OPTIONS, 
+  KPI_CATEGORIES,
+  KPI_CATEGORIES_OPTIONS,
+  KpiCategory
+} from '@/types/kpi';
 import { Employee } from '@/types/employee';
 import { Header } from '@/components/layout/Header';
 import { Dashboard } from '@/components/layout/Dashboard';
@@ -19,9 +27,11 @@ import {
   DialogDescription, 
   DialogFooter, 
   DialogHeader, 
-  DialogTitle 
+  DialogTitle,
+  DialogTrigger
 } from "@/components/ui/dialog";
 import { KpiEmployeeDashboard } from '@/components/kpi/KpiEmployeeDashboard';
+import { supabase } from '@/lib/supabase';
 
 // 取引情報の型定義
 interface SalesTransaction {
@@ -37,14 +47,17 @@ interface SalesTransaction {
 // KPI管理画面本体
 const KpiManagement = () => {
   const { isAuthenticated, loading: authLoading, isAdmin, user } = useAuth();
-  const { employees, loading: employeeLoading } = useEmployee();
+  const { employees, loading: employeeLoading, fetchEmployees } = useEmployee();
   const navigate = useNavigate();
+  
+  console.log('KpiManagement - User:', user);
+  console.log('KpiManagement - isAdmin:', isAdmin);
   
   const [activeTab, setActiveTab] = useState<string>("employees");
   const [selectedEmployee, setSelectedEmployee] = useState<string>("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isTransactionDialogOpen, setIsTransactionDialogOpen] = useState(false);
-  const [selectedKpiType, setSelectedKpiType] = useState<string>("");
+  const [selectedKpiType, setSelectedKpiType] = useState<KpiType | "">("");
   
   // サンプルKPIデータ
   const kpiData: KpiMetric[] = [
@@ -142,6 +155,13 @@ const KpiManagement = () => {
     }
   ];
   
+  // 従業員データの取得
+  useEffect(() => {
+    if (isAdmin) {
+      fetchEmployees();
+    }
+  }, [isAdmin, fetchEmployees]);
+  
   // 認証チェックとリダイレクト
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
@@ -208,6 +228,24 @@ const KpiManagement = () => {
   
   // 従業員一覧コンポーネント
   const EmployeeList = () => {
+    if (employeeLoading) {
+      return (
+        <Card>
+          <CardHeader>
+            <CardTitle>従業員KPI管理</CardTitle>
+            <CardDescription>
+              従業員ごとのKPI設定と進捗状況
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="flex justify-center items-center h-32">
+              <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full" />
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+
     return (
       <Card>
         <CardHeader>
@@ -451,7 +489,7 @@ const KpiManagement = () => {
                 </p>
                 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {recommendedKpiTypes.map(kpiType => {
+                  {recommendedKpiTypes.map((kpiType) => {
                     const isConfigured = employeeKpis.some(kpi => kpi.type === kpiType.value);
                     
                     return (
@@ -560,11 +598,23 @@ const KpiManagement = () => {
     const employee = employees.find(e => e.id === selectedEmployee);
     const kpiType = selectedKpiType ? KPI_TYPE_OPTIONS.find(option => option.value === selectedKpiType) : null;
     
-    const [formData, setFormData] = useState({
+    const [formData, setFormData] = useState<{
+      userId: string;
+      type: KpiType | "";
+      name: string;
+      category: KpiCategory;
+      value: number;
+      minimumTarget: number;
+      standardTarget: number;
+      stretchTarget: number;
+      unit: string;
+      date: string;
+      notes: string;
+    }>({
       userId: selectedEmployee,
       type: selectedKpiType || 'appointments',
       name: kpiType?.label || '',
-      category: kpiType?.category || 'sales',
+      category: (kpiType?.category as KpiCategory) || 'sales',
       value: 0,
       minimumTarget: 0,
       standardTarget: 0,
@@ -583,16 +633,16 @@ const KpiManagement = () => {
     };
     
     const handleTypeChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const value = e.target.value;
+      const value = e.target.value as KpiType;
       const selectedType = KPI_TYPE_OPTIONS.find(option => option.value === value);
       
       if (selectedType) {
         setFormData(prev => ({
           ...prev,
-          type: value as KpiType,
+          type: value,
           name: selectedType.label,
           unit: selectedType.unit,
-          category: selectedType.category || 'other'
+          category: selectedType.category
         }));
       }
     };
@@ -623,7 +673,6 @@ const KpiManagement = () => {
             <div className="text-sm text-muted-foreground">{employee?.department}</div>
           </div>
         </div>
-        
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
             <Label htmlFor="type">KPIタイプ</Label>
@@ -649,13 +698,6 @@ const KpiManagement = () => {
                   </option>
                 ))}
               </optgroup>
-              <optgroup label="その他">
-                {KPI_TYPE_OPTIONS.filter(option => option.category === 'other').map(option => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </optgroup>
             </select>
           </div>
           
@@ -666,9 +708,9 @@ const KpiManagement = () => {
               name="category"
               className="w-full px-3 py-2 border rounded-md"
               value={formData.category}
-              onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value as 'sales' | 'development' | 'other' }))}
+              onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value as KpiCategory }))}
             >
-              {KPI_CATEGORIES.map(category => (
+              {KPI_CATEGORIES_OPTIONS.map(category => (
                 <option key={category.value} value={category.value}>
                   {category.label}
                 </option>
@@ -677,19 +719,17 @@ const KpiManagement = () => {
           </div>
         </div>
         
-        {formData.type === 'custom' && (
-          <div className="space-y-2">
-            <Label htmlFor="name">KPI名</Label>
-            <Input
-              id="name"
-              name="name"
-              value={formData.name}
-              onChange={handleChange}
-              placeholder="KPI名を入力"
-              required
-            />
-          </div>
-        )}
+        <div className="space-y-2">
+          <Label htmlFor="name">KPI名</Label>
+          <Input
+            id="name"
+            name="name"
+            value={formData.name}
+            onChange={handleChange}
+            placeholder="KPI名を入力"
+            required
+          />
+        </div>
         
         <div className="space-y-2">
           <Label htmlFor="value">現在の達成値</Label>
