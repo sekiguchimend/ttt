@@ -66,7 +66,7 @@ const Contractors = () => {
 
   // 業務委託先追加ダイアログを開く
   const openAddContractorDialog = () => {
-    setIsAddContractorDialogOpen(true);
+    setIsAddContractorDialogOpen(true)
   };
 
   // 業務委託先編集ダイアログを開く
