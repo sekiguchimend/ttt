@@ -44,7 +44,7 @@ const Contractors = () => {
   const [activeTab, setActiveTab] = useState<string>("contractorList");
   const [viewingContractorId, setViewingContractorId] = useState<string | null>(null);
 
-  // Redirect to login if not authenticated
+  // Redirect to login if not authenticate
   useEffect(() => {
     if (!authLoading && !isAuthenticated) {
       navigate('/login');
