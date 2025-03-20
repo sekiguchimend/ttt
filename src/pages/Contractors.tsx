@@ -76,7 +76,7 @@ const Contractors = () => {
       setCurrentContractor(contractor);
       setIsEditContractorDialogOpen(true);
     }
-  };
+  }
 
   // 支払い追加ダイアログを開く
   const openAddPaymentDialog = () => {
